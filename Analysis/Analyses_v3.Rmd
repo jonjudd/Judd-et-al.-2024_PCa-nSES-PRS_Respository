@@ -42,7 +42,7 @@ library(meta)
 This load and edits the necessary data file to do my analysis. This includes the cancer, PRS, and SES data for the 451 variant PRS and the 5 ancestries I have
 
 ```{r}
-data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2023.11.22.csv")
+data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.02.21.csv")
 
 # Minor new definition of a function to be used later in this code block
 `%notin%` = Negate(`%in%`)
@@ -366,7 +366,7 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure1_models_2024.1.18.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure1_models_2024.02.22.csv")
 
 ```
 
@@ -610,7 +610,7 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure2_models_2024.1.19.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure2_models_2024.02.22.csv")
 
 
 # I also want to try creating a table of these models so I'm going to do some extra formatting and then export that table
@@ -635,7 +635,7 @@ table2 = summ_df %>%
 
 # And now export this table
 table2 %>% 
-  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table2_models_2024.1.19.csv")
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table2_models_2024.02.22.csv")
 
 ```
 
@@ -905,7 +905,7 @@ summ_df = left_join(summ_df, difference_df) %>%
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure3_models_2024.2.6.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure3_models_2024.02.22.csv")
 
 
 ```
@@ -1039,7 +1039,7 @@ for (j in 0:1){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure3_models_2023.12.28_debug.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure3_models_2024.02.22_debug.csv")
 ```
 
 #### Plot Generation
@@ -1170,7 +1170,7 @@ for (i in ses_factors){
   
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure4_models_2024.02.07.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure4_models_2024.02.22.csv")
 
 
 # I also want to try creating a table of these models so I'm going to do some extra formatting and then export that table
@@ -1198,7 +1198,7 @@ table4 = summ_df %>%
 
 # And now export this table
 table4 %>% 
-  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table4_models_2024.2.7.csv")
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table4_models_2024.02.7.csv")
 
 ```
 
