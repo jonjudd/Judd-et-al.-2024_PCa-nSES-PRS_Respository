@@ -5,6 +5,9 @@
 # This file is going to combine my previous code that I used to merge my data into a single file. This includes the cancer, ses, and prs data.
 # I consider this v2 only because it is a substantial coding step even though the code will remain relatively the same
 
+# Changelog: --------------------------
+# 2.21.24 - I want to see if my result is specific to prostate cancer so I'm making a composite file with colorectal cancer instead
+
 # Packages: ------------------------------
 # Reset environment
 rm(list = ls())
@@ -17,11 +20,10 @@ library(readxl)
 library(tidymodels)
 library(ggpubr)
 library(devtools)
-library(introdataviz)
 
 
 # Variables to save: -------------------
-keep_vars = c("keep_vars","prostate_df", "merged_data", "total_prs")
+keep_vars = c("keep_vars","colorectal_df", "merged_data", "total_prs")
 rm(list = ls()[!(ls() %in% keep_vars)])
 
 
@@ -36,9 +38,9 @@ cancer_file = "/labs/jswitte/Data/Phenotype/ukb-cancer-rephenotyping/pheno_files
 cancer_df = fread(input = cancer_file)
 
 # Choose columns of interest
-prostate_df = cancer_df %>% select(eid, contains("prostate"), case, str_c("PC", 1:10), age_assessment, yob, mob, ethnicity, genotyping.array, Inferred.Gender) %>% 
+colorectal_df = cancer_df %>% select(eid, contains("colorectal"), case, str_c("PC", 1:10), age_assessment, yob, mob, ethnicity, genotyping.array, Inferred.Gender) %>% 
   # I also want to replace controls that list NA into 0's. This is just a data processsing step
-  mutate(across(matches("^prostate$|^prostate_incid_any$"), 
+  mutate(across(matches("^colorectal$|^colorectal_incid_any$"), 
                 ~ replace_na(.x,0))) %>% 
   # I then also only want men so let's pull that too
   filter(Inferred.Gender == "M") %>% 
@@ -49,7 +51,7 @@ prostate_df = cancer_df %>% select(eid, contains("prostate"), case, str_c("PC", 
   select(-contains(c("malig", "first")),-Inferred.Gender)
 
 # Great. Now let's output this into a specific place
-write_csv(prostate_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Cancer_Files/ukb_cancer_2024.02.21.csv")
+write_csv(colorectal_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Cancer_Files/ukb_cancer_crc_2024.02.21.csv")
 
 
 
@@ -198,10 +200,9 @@ rm(list = ls()[!(ls() %in% keep_vars)])
 
 
 # Now merge the files: ---------------------
-
 # Rename files
 prs_df = total_prs
-cancer_df = prostate_df
+cancer_df = colorectal_df
 ses_df = merged_data
 
 # Merge datasets: -------------------
@@ -211,7 +212,7 @@ merged_df_raw = prs_df %>% rename(eid = IID) %>%
   left_join(ses_df, by = "eid")
 
 # I realize that there is a lot of missing data particularly for people w/o cacer or ses data. I want those removed
-merged_df = merged_df_raw %>% filter(!is.na(prostate))
+merged_df = merged_df_raw %>% filter(!is.na(colorectal))
 
 
 # Remove everything except merged_df
@@ -220,5 +221,5 @@ rm(list = ls()[(ls() %>% str_which("^merged_df$", negate = T))])
 
 
 # let's output this file
-write_csv(merged_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.02.21.csv")
+write_csv(merged_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_crc_2024.02.21.csv")
 
