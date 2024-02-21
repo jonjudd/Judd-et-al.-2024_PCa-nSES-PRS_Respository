@@ -78,8 +78,7 @@ data_df = data_raw %>%
   filter(Assessment_Centre %notin% c(11023, 11022, 11003, 11005, 11004)
   ) %>% 
   # I also want assessment center and the smoking to be a factor
-  mutate(Assessment_Centre = as.factor(Assessment_Centre),
-         Household_Smoking = as.factor(Household_Smoking)) 
+  mutate(Assessment_Centre = as.factor(Assessment_Centre)) 
 
 ```
 
@@ -515,7 +514,7 @@ p6 = plotting_df2 %>%
 
 # -----
 # Code to make individual ancestry plots
-p_ancestry = plotting_df %>% filter(low95 != 0, ancestry == "eur") %>% 
+p_ancestry = plotting_df %>% filter(low95 != 0, ancestry == "mix") %>% 
   ggplot(aes(x = term, y = OR, ymin = low95, ymax = up95)) +
   geom_pointrange(show.legend = F, position = position_dodge(width = 0.5),
                   colour = "#00abff") +
@@ -954,13 +953,13 @@ layout <- c(
     area(t = 0, l = 5, b = 0, r = 9)
     )
   
-p_combined = p + p_right + plot_layout(design = layout)
-
-
-# Now print
-print(p)
-print(p_right)
-print(p_combined)
+# p_combined = p + p_right + plot_layout(design = layout)
+# 
+# 
+# # Now print
+# print(p)
+# print(p_right)
+# print(p_combined)
 
 ```
 
@@ -1198,7 +1197,7 @@ table4 = summ_df %>%
 
 # And now export this table
 table4 %>% 
-  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table4_models_2024.02.7.csv")
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table4_models_2024.02.22.csv")
 
 ```
 
