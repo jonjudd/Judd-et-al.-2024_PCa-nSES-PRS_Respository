@@ -8,7 +8,6 @@
 # Packages: ------------------------------
 # Reset environment
 rm(list = ls())
-"~/R/x86_64-pc-linux-gnu-library/4.0" %>% c(.,.libPaths()) %>% .libPaths(.)
 
 
 # Base R:
@@ -22,7 +21,7 @@ library(introdataviz)
 
 
 # Variables to save: -------------------
-keep_vars = c("prostate_df", "merged_data", "total_prs")
+keep_vars = c("keep_vars","prostate_df", "merged_data", "total_prs")
 rm(list = ls()[!(ls() %in% keep_vars)])
 
 
@@ -50,14 +49,13 @@ prostate_df = cancer_df %>% select(eid, contains("prostate"), case, str_c("PC", 
   select(-contains(c("malig", "first")),-Inferred.Gender)
 
 # Great. Now let's output this into a specific place
-write_csv(prostate_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Cancer_Files/ukb_cancer_2023.11.17.csv")
+write_csv(prostate_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Cancer_Files/ukb_cancer_2024.02.21.csv")
 
 
 
 
 # .----
 # RESET THE ENVIRONMENT: -------------
-keep_vars = c("prostate_df", "merged_data", "total_prs")
 rm(list = ls()[!(ls() %in% keep_vars)])
 # .----
 
@@ -95,9 +93,9 @@ ukb6192_df = fread(ukb6192_file)
 
 # And then indexing for Townsend is actually much sinmpler since it is just one column
 townsend_df = ukb6192_df %>% select(eid, '189-0.0', '2365-0.0', '3809-0.0', 
-                                    "54-0.0", "50-0.0", "21001-0.0", "1259-0.0")
+                                    "54-0.0", "50-0.0", "21001-0.0")
 names(townsend_df) = c("eid", "Townsend_Index", "PSA_Screening","Time_Since_PSA",
-                       "Assessment_Centre","Height","BMI", "Household_Smoking")
+                       "Assessment_Centre","Height","BMI")
 
 # Also remove people that aren't either a yes or no on screening. 
 # Also remove people that don't know if they've been screened or didn't answer
@@ -143,13 +141,12 @@ merged_data = imd_df %>%
   inner_join(ind_data, by = "eid")
 
 # And export
-write_csv(merged_data, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Files/ukb_ses_2023.11.17.csv")
+write_csv(merged_data, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Files/ukb_ses_2024.02.21.csv")
 
 
 
 # .----
 # RESET THE ENVIRONMENT: -------------
-keep_vars = c("prostate_df", "merged_data", "total_prs")
 rm(list = ls()[!(ls() %in% keep_vars)])
 # .----
 
@@ -158,11 +155,11 @@ rm(list = ls()[!(ls() %in% keep_vars)])
 # I want to take the PRS files that I've generated for PRS-451, add the ancestry, and combine into 1 file
 
 # Load PRS files
-eur_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/eur_Score_PRS_chrAll.sscore"
-chb_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/chinese_Score_PRS_chrAll.sscore"
-afr_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/afr_Score_PRS_chrAll.sscore"
-mix_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/mixed_Score_PRS_chrAll.sscore"
-sas_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/sas_Score_PRS_chrAll.sscore"
+eur_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/eur_Score_PRS_chrAll.sscore"
+chb_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/chinese_Score_PRS_chrAll.sscore"
+afr_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/afr_Score_PRS_chrAll.sscore"
+mix_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/mixed_Score_PRS_chrAll.sscore"
+sas_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/sas_Score_PRS_chrAll.sscore"
 
 # Document files and ancestries
 prs_files = c(eur_prs, chb_prs, afr_prs, mix_prs, sas_prs)
@@ -189,13 +186,12 @@ for (i in 1:length(ances)){
 }
 
 # Output this file
-write_csv(total_prs, "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/AllAnces_Score_PRS_chrAll.sscore")
+write_csv(total_prs, "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/AllAnces_Score_PRS269_chrAll.sscore")
 
 
 
 # .----
 # RESET THE ENVIRONMENT: -------------
-keep_vars = c("prostate_df", "merged_data", "total_prs")
 rm(list = ls()[!(ls() %in% keep_vars)])
 # .----
 
@@ -224,5 +220,5 @@ rm(list = ls()[(ls() %>% str_which("^merged_df$", negate = T))])
 
 
 # let's output this file
-write_csv(merged_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2023.11.22.csv")
+write_csv(merged_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.02.21.csv")
 
