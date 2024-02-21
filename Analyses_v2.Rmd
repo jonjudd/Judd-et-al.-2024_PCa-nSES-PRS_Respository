@@ -1,0 +1,1347 @@
+---
+title: Plots_and_Analyses.R
+author: jjudd5
+date: '2023-11-22'
+output: html_notebook
+---
+
+### Introduction:
+
+This file is an updated version of my previous analysis file to use for the expanded PRS and ancestries
+
+### Packages:
+
+```{r include = F}
+# Reset environment and set right directory
+rm(list = ls())
+.libPaths(c("~/R/x86_64-pc-linux-gnu-library/4.0",.libPaths()) 
+)
+           
+
+# Load packages:
+library(tidyverse)
+library(data.table)
+library(readxl)
+library(tidymodels)
+library(corrr)
+library(ggpubr)
+library(devtools)
+library(introdataviz)
+library(leaps)
+library(caret)
+library(oddsratio)
+
+```
+
+### Load the necessary data
+
+This load and edits the necessary data file to do my analysis. This includes the cancer, PRS, and SES data for the 451 variant PRS and the 5 ancestries I have
+
+```{r}
+data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2023.11.22.csv")
+
+# Minor new definition of a function to be used later in this code block
+`%notin%` = Negate(`%in%`)
+
+
+# I also want to make sure to have new cancer variables that I can plug into my models. 
+data_df = data_raw %>% 
+  #First, I want a variable that counts any prostate cancer as case and no cancer at all as the control. 
+  # If no prostate cancer, but other cancer, then that is NA
+  mutate(prostate_case = if_else(prostate == 1, 1, 
+                                 if_else(case == 1, NA, 0)
+                                 )
+         ) %>% 
+  # I also want to include a measure of incident cancer
+  mutate(prostate_incident = if_else(prostate == 1 & prostate_incid_any == 0, NA,
+                                     if_else(prostate_incid_any == 0 & case == 0, 0, 
+                                             if_else(prostate_incid_any == 1, 1, NA))
+                                     )
+         ) %>% 
+  # I also want prevalent cancer
+  mutate(prostate_prevalent = if_else(prostate_incid_any == 1, NA,
+                                      if_else(prostate==0 & prostate_incid_any==0 & case ==0, 0, 
+                                              if_else(prostate==1 & prostate_incid_any==0, 1, NA))
+                                      )
+         ) %>% 
+  # Make all of these factors
+  mutate(prostate_case = as.factor(prostate_case),
+         prostate_incident = as.factor(prostate_incident),
+         prostate_prevalent = as.factor(prostate_prevalent)) %>% 
+  # Remove non-NA's for screening PSA
+  filter(!is.na(PSA_Screening)) %>% 
+  # I want to remove non-UK assessment centers
+  filter(Assessment_Centre %notin% c(11023, 11022, 11003, 11005, 11004)
+  ) %>% 
+  # I also want assessment center and the smoking to be a factor
+  mutate(Assessment_Centre = as.factor(Assessment_Centre),
+         Household_Smoking = as.factor(Household_Smoking)) 
+
+```
+
+### SES & Ancestry Variable Selection:
+
+This is where I define the SES variables that are used throughout the models
+
+```{r}
+# SES variables to loop through
+ses_factors = names(data_df) %>% .[25:33]
+ses_factors
+
+# All ancestries that I can look through
+ances = data_df %>% pull(Ances) %>% unique()
+ances
+
+# Ancestries excluding Chinese for modeling
+ances_exclude = ances[-2]
+```
+
+### Consolidated Main Models 
+
+Now that I have my data, I want to run my main models using the new PRS across 4 ancestries.
+
+The ancestries are:
+
+-   European
+
+-   African
+
+-   South-Asian, and
+
+-   Mixed
+
+I'm not going to do models for Chinese individuals because I simply don't have enough people to build the models, but I'll do the other 4
+
+The models include:
+
+-   SES Continuous Quartile Models, SES Discrete Quartile Model, SES Continuous IQR model
+
+-   Basic PSA Model
+
+-   Basic PRS Models
+
+-   PRS\*SES Models
+
+I'm also going to run the 2 stratified models for European samples since I'm still using a new PRS model
+
+Let's start with:
+
+#### Continuous Quartile model
+
+```{r}
+
+# Initially set up of the enironmnt
+keep_variables = c("data_df", "keep_variables", "ses_factors", 
+                   "ances", "ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances_exclude){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+    # Let's pull out the ancestry specific data and set list for models for this ancestry
+    data_split = data_df %>% filter(Ances == j)
+    model_results = list()
+
+  
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  for (i in ses_factors){
+  
+  # Make symbol for coding sake 
+    i = sym(i)
+  
+  # Create new data frame with quartile and rank data for each of the SES factors 
+  # I have 2 separate models for quartiles. One which is continuous and the other which is discrete
+    temp_df = data_split %>% drop_na( !!i ) %>% 
+      mutate(Quartile_cont = ntile(!!i,4)) 
+  
+  # Have the model with the quartiles continuous model  
+    model = logistic_reg() %>% 
+      fit(prostate_case ~ Quartile_cont + age_assessment +
+            PSA_Screening, data = temp_df)
+  
+  # Save the quartiles model 
+    OR = tidy(model, exponentiate = T) %>% 
+      rename(OR = estimate) %>% 
+      mutate(low95 = exp(log(OR) - 1.96*std.error), 
+             up95 = exp(log(OR) + 1.96*std.error)) %>% 
+      select(-std.error, -statistic) 
+  
+    model_results[[i]] <- OR
+  
+    
+  # Benchmark that this set of model is complete 
+  print(i)
+  }
+  
+  # Transform the list to a dataframe and save the models and ancestry
+  results_df = list_rbind(model_results, names_to = "ses") 
+
+  # Then add to summary data_frame
+  summ_df = results_df %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+  
+}
+
+
+
+# And now export these models.
+summ_df %>% 
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/quartile_cont_ses_models_2023.11.27.csv")
+
+```
+
+Then are the plots for the continuous quartile models
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+
+# Loop through the different ancestries to plot
+
+for (j in ances_exclude){
+  plotting_df = summ_df %>%
+    filter(ancestry == j) %>% 
+    filter(term %notin% c("(Intercept)", "age_assessment", "PSA_Screening"))
+  
+  
+  # Create a plot for quartiles continuous
+  p = plotting_df %>% 
+        ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses)) +
+        geom_pointrange() +
+        geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+        labs(x = "Odds Ratio", y = "SES") +
+        ggtitle(paste0(j," Continuous Quartiles SES Odds Ratios with 95% CI")
+                ) +
+        theme_minimal()
+  
+  print(p)
+}
+```
+
+------------------------------------------------------------------------
+
+#### Discrete Quartile model
+
+I previously messed up my contintinuous quartile model. Aparently, thats not how you do it. If I was separating my data into quartiles, I should just keep it discrete and compare groups. I will include that code here. he fixed continuous model will be later
+
+```{r}
+keep_variables = c("data_df", "keep_variables", "ses_factors",
+                   "ances","ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances_exclude){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+  model_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    # Make symbol for coding sake 
+      i = sym(i)
+    
+    # Create new data frame with quartile and rank data for each of the SES factors 
+    # I have 2 separate models for quartiles. One which is continuous and the other which is discrete
+      temp_df = data_split %>% drop_na( !!i ) %>% 
+        mutate(Quartile_ = as.factor( ntile(!!i,4) ) 
+               )
+    
+    # Repeat for discrete continuous
+      model = logistic_reg() %>% 
+        fit(prostate_case ~ Quartile_ + age_assessment + PSA_Screening, data = temp_df)
+    
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) 
+    
+      model_results[[i]] <- OR
+      
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+    # Then add to summary data_frame
+    summ_df = results_df %>% 
+      mutate(ancestry = j) %>% 
+      rbind(summ_df, .)
+
+}
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/quartile_discrete_ses_models_2023.11.28.csv")
+
+```
+
+Now the plotting
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+
+for (j in ances_exclude){
+
+  plotting_df = summ_df %>% 
+    filter(ancestry == j) %>% 
+    filter(term %notin% c("(Intercept)", "age_assessment", "PSA_Screening")) %>% 
+    mutate(SES_Quartile = as.factor(paste0(ses, "-",term))
+           )
+  
+  
+  # Create a plot for quartiles continuous
+  p = plotting_df %>% 
+        ggplot(aes(x = OR, 
+                   y = SES_Quartile, 
+                   xmin = low95, xmax = up95, color = ses)) +
+        geom_pointrange() +
+        scale_y_discrete(limits = rev(levels(plotting_df$SES_Quartile))
+                         ) +
+        geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+        labs(x = "Odds Ratio", y = "SES Quartile") +
+        ggtitle(paste0("Discrete Quartiles SES Odds Ratios with 95% CI - ", j)
+                ) +
+        theme_minimal()
+
+  print(p)
+}
+
+```
+
+------------------------------------------------------------------------
+
+#### Continuous SES Models
+
+Now is th corrected continuous SES models. I'm basically going to transform it such that the OR measures an increase in the IQR. 
+
+
+```{r}
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", 
+                   "ances","ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances_exclude){
+  
+    # Print ancestry to benchmark
+    print(j)
+    
+    # Let's pull out the ancestry specific data and set list for models for this ancestry
+    data_split = data_df %>% filter(Ances == j)
+    model_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  for (i in ses_factors){
+  
+  
+      # Run models of interest
+      formula = paste0("prostate_case ~ ",i, " + age_assessment + PSA_Screening") %>% as.formula()
+      model = logistic_reg() %>% fit(formula, data = data_split)
+      
+      # I also want to adjust the beta to account for a IQR change so I need to do some manipulation
+      ses_iqr = data_df %>% pull(i) %>% IQR(na.rm = T)
+      
+      # Compared to other models, I don't log the estimate because I didn't previously exponentiate it
+      OR = tidy(model) %>% 
+        mutate(estimate = ses_iqr*estimate, 
+               std.error = ses_iqr*std.error) %>% 
+        mutate(OR = exp(estimate),
+               low95 = exp(estimate - 1.96*std.error), 
+               up95 = exp(estimate + 1.96*std.error)) %>%
+        select(-std.error, -statistic, -estimate) %>% 
+        select(term, OR, p.value, low95, up95)
+      
+      model_results[[i]] <- OR
+      
+      
+      
+      # Benchmark that this set of model is complete
+      print(i)
+  }
+
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+  # Then add to summary data_frame
+  summ_df = results_df %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+
+}
+
+# And now export these models.
+summ_df %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/iqr_ses_models_2023.11.28.csv")
+
+
+```
+
+Now the code for the plots
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+for (j in ances_exclude){
+
+  plotting_df = summ_df %>% 
+    filter(ancestry == j) %>% 
+    filter(term %notin% c("(Intercept)", "age_assessment", 
+                          "PSA_Screening", "genotyping.arrayUKBL" )) 
+  
+  # Create a plot
+  p = plotting_df %>% 
+        ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)
+               ) +
+        geom_pointrange(show.legend = FALSE) +
+        geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+        labs(x = "Odds Ratio (95% CI)", y = "SES") +
+        ggtitle(paste0("Prostate Cancer ~ Deprivation (IQR Step) - ", j)
+                )+
+        theme_minimal()
+  
+  print(p)
+
+}
+
+```
+
+------------------------------------------------------------------------
+
+#### Basic PSA Screening Model
+
+Since I'm going to use PSA Screening a lot, I'm also going to make a model for that here. I'm going to use the continuous IQR-step model since that is the broadest and usable for a nearby presentation
+
+```{r}
+# Set up
+data_controls = data_df %>% filter(prostate_case == 0) %>% mutate(PSA_Screening = as.factor(PSA_Screening))
+keep_variables = c("data_df", "data_controls", "keep_variables", "ses_factors", 
+                   "ances", "ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances_exclude){
+  
+    # Print ancestry to benchmark
+    print(j)
+    
+    # Let's pull out the ancestry specific data and set list for models for this ancestry
+    data_split = data_controls %>% filter(Ances == j)
+    model_results = list()
+
+  for (i in ses_factors){
+  
+    # Create the total cases model for the ses, edit the output, and then save in the list 
+      formula = paste0("PSA_Screening ~", i, " + age_assessment") %>% as.formula()
+      model = logistic_reg() %>% fit(formula, data = data_split)
+    
+    #I also want to adjust the beta to account for a IQR change so I need to do some manipulation
+      ses_iqr = data_df %>% pull(i) %>% IQR(na.rm = T)
+        
+        # Compared to other models, I don't log the estimate because I didn't previously exponentiate it
+        OR = tidy(model) %>% 
+          mutate(estimate = ses_iqr*estimate, 
+                 std.error = ses_iqr*std.error) %>% 
+          mutate(OR = exp(estimate),
+                 low95 = exp(estimate - 1.96*std.error), 
+                 up95 = exp(estimate + 1.96*std.error)) %>%
+          select(-std.error, -statistic, -estimate) %>% 
+          select(term, OR, p.value, low95, up95)
+    
+    model_results[[i]] <- OR
+    
+    # Benchmark that this set of model is complete 
+    print(i) 
+  }
+
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+  # Then add to summary data_frame
+  summ_df = results_df %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+
+}
+
+# And write
+summ_df %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/PSA_outcome_ses_models_2023.11.28.csv") 
+
+```
+
+And then the basic plots
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+for (j in ances_exclude){
+
+  plotting_df = summ_df %>%
+    filter(ancestry == j) %>% 
+    filter(term %notin% c("(Intercept)", "age_assessment")
+           ) 
+  
+  # Create a plot
+  p = plotting_df %>% 
+        ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses)) +
+        geom_pointrange(show.legend = FALSE) +
+        geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+        labs(x = "Odds Ratio (95% CI)", y = "SES") +
+        ggtitle(paste0("Ever PSA Screened ~ Deprivation (IQR Step) - ", j)
+                ) +
+        theme_minimal()
+  
+  print(p)
+
+}
+
+```
+
+------------------------------------------------------------------------
+
+#### Basic PRS Model
+
+Since I'm using a new 451 variant model, I'm going to run a new basic PRS model since my expected results are going to be slightly different. With this, I will compare the separate ancestries PRS ORs since that is the one comparison
+
+```{r}
+# Set up
+keep_variables = c("data_df", "keep_variables", "ses_factors", 
+                   "ances", "ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances_exclude){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+  model_results = list()
+  
+  
+  # Create the total cases model for the ses, edit the output, and then save in the list 
+    formula = paste0("prostate_case ~ PRS + age_assessment + PSA_Screening", 
+                     str_flatten(str_c("+ PC",1:10))
+                     ) %>% 
+                       as.formula()
+    model = logistic_reg() %>% fit(formula, data = data_split)
+  
+    # Compared to other models, I don't log the estimate because I didn't previously exponentiate it
+    OR = tidy(model, exponentiate = T) %>% 
+      rename(OR = estimate) %>% 
+      mutate(low95 = exp(log(OR) - 1.96*std.error), 
+             up95 = exp(log(OR) + 1.96*std.error)) %>% 
+      select(-std.error, -statistic) 
+  
+  model_results <- OR
+
+  # Add to summary data_frame with the ancestry
+  summ_df = model_results %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+
+}
+
+# And write
+summ_df %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/PRSonly_models_2023.11.28.csv") 
+
+```
+
+Now plot the different PRS results
+
+```{r}
+# Edit this df to better plot
+plotting_df = summ_df %>% 
+  filter(term %in% "PRS") 
+
+# Create a plot
+plotting_df %>% 
+  ggplot(aes(x = OR, y = ancestry, xmin = low95, xmax = up95, color = ancestry)) +
+  geom_pointrange(show.legend = FALSE) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "Odds Ratio (95% CI)", y = "Ancestry") +
+  ggtitle(paste0("Prostate Cancer ~ PRS (Unit Change)")
+          ) +
+  xlim(0,6.5) +
+  theme_minimal()
+
+```
+
+#### SES*PRS Interaction Model
+
+The last model I am going to generate is the model that looks at the interaction between SES and PRS scores. I'm going to use the IQR base model as the SES variable and also keep the unit change PRS model
+
+```{r}
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", 
+                   "ances","ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances_exclude){
+  
+    # Print ancestry to benchmark
+    print(j)
+    
+    # Let's pull out the ancestry specific data and set list for models for this ancestry
+    data_split = data_df %>% filter(Ances == j)
+    model_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  for (i in ses_factors){
+  
+      # Run models of interest
+      formula = paste0("prostate_case ~ ",i, " + PRS + PRS*", i, 
+                       " + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = data_split)
+      
+      # I also want to adjust the beta to account for a IQR change so I need to do some manipulation
+      ses_iqr = data_df %>% pull(i) %>% IQR(na.rm = T)
+      
+      # Compared to other models, I don't log the estimate because I didn't previously exponentiate it
+      # Though i want to calculate the ORs differently so I need multiple model corrections. 1 for the SES variable
+      OR_ses = tidy(model) %>% 
+        mutate(estimate = ses_iqr*estimate, 
+               std.error = ses_iqr*std.error) %>% 
+        mutate(OR = exp(estimate),
+               low95 = exp(estimate - 1.96*std.error), 
+               up95 = exp(estimate + 1.96*std.error)) %>%
+        select(-std.error, -statistic, -estimate) %>% 
+        select(term, OR, p.value, low95, up95) %>% 
+        .[c(2,16),]
+
+      
+      # And one for the PRS variable
+      OR_prs = tidy(model, exponentiate = T) %>% 
+      rename(OR = estimate) %>% 
+      mutate(low95 = exp(log(OR) - 1.96*std.error), 
+             up95 = exp(log(OR) + 1.96*std.error)) %>% 
+      select(-std.error, -statistic) %>% 
+        .[3,]
+      
+      # Then merge the 2
+      OR = rbind(OR_ses, OR_prs)
+      
+      model_results[[i]] <- OR
+      
+      # Benchmark that this set of model is complete
+      print(i)
+  }
+
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+  # Then add to summary data_frame
+  summ_df = results_df %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+
+}
+
+# And now export these models.
+summ_df %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/Interaction_ses_models_2023.11.28.csv")
+
+
+```
+
+Now plot the results. I'm going to make 3 plots for each of the 3 results I care about:
+- SES Main Effect
+- PRS Main Effect
+- SES*PRS Interaction Effect
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+for (j in ances_exclude){
+
+  print(j)
+  
+  plotting_df = summ_df %>%
+    filter(ancestry == j) 
+  
+  # Create a plot
+  ses_plot = plotting_df %>% filter(str_detect(term, "PRS",negate = T)) %>% 
+                ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)
+                       ) +
+                geom_pointrange(show.legend = FALSE) +
+                geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+                scale_x_log10() +
+                labs(x = "Log-scaled Odds Ratio (95% CI)", y = "SES") +
+                ggtitle(paste0("Prostate Cancer ~ Deprivation (IQR Step) - ", j)
+                        )+
+                theme_minimal()
+  
+  int_plot = plotting_df %>% filter(str_detect(term, ":")) %>% 
+                ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)
+                       ) +
+                geom_pointrange(show.legend = FALSE) +
+                geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+                labs(x = "Odds Ratio (95% CI)", y = "SES") +
+                ggtitle(paste0("Prostate Cancer ~ Deprivation*PRS Interaction - ", j)
+                        )+
+                theme_minimal()
+  
+  prs_plot = plotting_df %>% filter(str_detect(term, "PRS"), str_detect(term, ":", negate = T)) %>% 
+              ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)) +
+              geom_pointrange(show.legend = T) +
+              geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+              labs(x = "Odds Ratio (95% CI)", y = "SES") +
+              ggtitle(paste0("Prostate Cancer ~ PRS (Unit Change) - ", j)
+                      ) +
+              theme_minimal()
+  
+  print(ses_plot)
+  print(int_plot)
+  print(prs_plot)
+
+}
+
+```
+
+
+#### SES*PRS No Interaction Model
+
+My previous interaction model is proving to be a bit funky and I think that has to do with the interaction term that I have. I want to make new models that include PRS
+and SES, but not the interaction term
+
+The code will be identical except for the removal of that term
+
+```{r}
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", 
+                   "ances","ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances_exclude){
+  
+    # Print ancestry to benchmark
+    print(j)
+    
+    # Let's pull out the ancestry specific data and set list for models for this ancestry
+    data_split = data_df %>% filter(Ances == j)
+    model_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  for (i in ses_factors){
+  
+      # Run models of interest
+      formula = paste0("prostate_case ~ ",i, " + PRS + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = data_split)
+      
+      # I also want to adjust the beta to account for a IQR change so I need to do some manipulation
+      ses_iqr = data_df %>% pull(i) %>% IQR(na.rm = T)
+      
+      # Compared to other models, I don't log the estimate because I didn't previously exponentiate it
+      # Though i want to calculate the ORs differently so I need multiple model corrections. 1 for the SES variable
+      OR_ses = tidy(model) %>% 
+        mutate(estimate = ses_iqr*estimate, 
+               std.error = ses_iqr*std.error) %>% 
+        mutate(OR = exp(estimate),
+               low95 = exp(estimate - 1.96*std.error), 
+               up95 = exp(estimate + 1.96*std.error)) %>%
+        select(-std.error, -statistic, -estimate) %>% 
+        select(term, OR, p.value, low95, up95) %>% 
+        .[2,]
+
+      
+      # And one for the PRS variable
+      OR_prs = tidy(model, exponentiate = T) %>% 
+      rename(OR = estimate) %>% 
+      mutate(low95 = exp(log(OR) - 1.96*std.error), 
+             up95 = exp(log(OR) + 1.96*std.error)) %>% 
+      select(-std.error, -statistic) %>% 
+        .[3,]
+      
+      # Then merge the 2
+      OR = rbind(OR_ses, OR_prs)
+      
+      model_results[[i]] <- OR
+      
+      # Benchmark that this set of model is complete
+      print(i)
+  }
+
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+  # Then add to summary data_frame
+  summ_df = results_df %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+
+}
+
+# And now export these models.
+summ_df %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/prs_ses_models_2023.11.28.csv")
+```
+
+And now plot the SES and PRS OR values
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+for (j in ances_exclude){
+
+  print(j)
+  
+  plotting_df = summ_df %>%
+    filter(ancestry == j) 
+  
+  # Create a plot
+  ses_plot = plotting_df %>% filter(str_detect(term, "PRS",negate = T)) %>% 
+                ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)
+                       ) +
+                geom_pointrange(show.legend = FALSE) +
+                geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+                labs(x = "Odds Ratio (95% CI)", y = "SES") +
+                ggtitle(paste0("Prostate Cancer ~ Deprivation (IQR Step) - ", j)
+                        )+
+                theme_minimal()
+  
+  prs_plot = plotting_df %>% filter(str_detect(term, "PRS"), str_detect(term, ":", negate = T)) %>% 
+              ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)) +
+              geom_pointrange(show.legend = T) +
+              geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+              labs(x = "Odds Ratio (95% CI)", y = "SES") +
+              ggtitle(paste0("Prostate Cancer ~ PRS (Unit Change) - ", j)
+                      ) +
+              theme_minimal()
+  
+  print(ses_plot)
+  print(prs_plot)
+
+}
+
+```
+
+
+
+------------------------------------------------------------------------
+
+### Distribution of Data
+
+I need to create a table1. This is basically my understanding the distributions and numbers of my data. I specifically want to know the counts for cases and controls across different groups
+
+```{r}
+# Create a list of variables to save my results
+table1 = list()
+```
+
+
+
+#### SES Distribution
+
+I first want to characterize the distribution of my cases/controls/prevalence across the different nSES/PRS quartiles.
+
+```{r}
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances){
+
+  # I'm basically going to want a lot of data that takes into account the quartile of SES so I'm going to create lasting variables that keep track of that
+  data_split = data_df %>% filter(Ances == j)
+  
+  for (i in ses_factors){
+  
+  # Make symbol for coding sake 
+    sym_i = sym(i)
+  
+    data_split = data_split %>% drop_na( !!sym_i ) %>% 
+      mutate(temp = ntile(!!sym_i,4)) %>% 
+      rename_with( ~ paste0(i, "_quartile"), matches("temp"))
+  }
+  
+  data_split = data_split %>% drop_na(PRS) %>% 
+    mutate(PRS_quartile = ntile(PRS,4))
+
+
+  # I can now basically use this split dataset to pull things like the case/controls (and thus prevalence for the different groups that I care about)
+  # Let's start by pulling the nSES variables, their quartiles, and the case/controls. I also need this data longer
+    split_prev = data_split %>% 
+      select(contains( c("eid", 
+                         "quartile", 
+                         "prostate_incident")) 
+             ) %>% 
+      pivot_longer(cols = contains("quartile"),names_to = "Domain", values_to = "Quartile")
+  
+  
+  # I will now summarize this data to categorize case/controls as well as prevalence at the end
+  prev_summary =  split_prev %>% 
+    group_by(Domain, Quartile, prostate_incident) %>% 
+    summarize(Count = n()) %>% 
+    na.omit() %>% 
+    pivot_wider(names_from = prostate_incident, values_from = Count) %>% 
+    rename(Controls = "0", Cases = "1") %>% 
+    mutate(Prevalence = round(Cases/Controls,2)
+           ) 
+
+  
+  # Add the ancestry and save to overarching dataframe
+  summ_df = prev_summary %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+  
+}
+
+# Save the summary variables
+table1 = table1 %>% list_assign(nSES_dist = summ_df
+                                )
+
+```
+
+#### PSA Distribution
+
+I'm also interested in the split of PSA screening for different SES groups for both cases and controls. I may not end up splitting the data by SES in the end, but that can be a later transofrmation
+
+I largely just want the case/controls split for never/ever screened. I have code for quartile never/ever screened as well as screened in controls/cases over ses quartiles in previous iterations. I can redo that for a suppliment, but don't need it here.
+
+```{r}
+
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances){
+
+  # I'm basically going to want a lot of data that takes into account the quartile of SES so I'm going to create lasting variables that keep track of that
+  data_split = data_df %>% filter(Ances == j)
+  
+  # I can now use this to pull the main columns of interest
+  split_psa = data_split %>% 
+    select(contains( c("eid",
+                       "prostate_incident",
+                       "PSA_Screening")) 
+           ) %>% na.omit() %>% 
+    # Now group by my 2 variables and see where they land
+    group_by(prostate_incident, PSA_Screening) %>% 
+    summarize(Count = n()) %>% 
+    # Pivot-wider for understanding sake
+    pivot_wider(names_from = prostate_incident, values_from = Count) %>% 
+    rename(Controls = "0", Cases = "1")
+  
+    # Add the ancestry and save to overarching dataframe
+  summ_df = split_psa %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+  
+  }
+
+
+
+# Now I can save this
+table1 = table1 %>% list_assign(psa_dist = summ_df
+                                )
+
+
+```
+
+#### Anthropomorphic Distribution
+
+There it is. I've calculated the numbers per SES variable. Now I want to do the same for other variables, such as age, height, and BMI
+
+```{r}
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Pull out the age, height, and BMI data
+data_split = data_df %>% 
+  select(contains(c("eid", "Ances",
+                    "prostate_incident",
+                    "age_assessment",
+                    "height",
+                    "BMI")),
+         )
+
+# I will now summarize this data to categorize case/controls as well as prevalence at the end
+describe_summ =  data_split %>% 
+  na.omit() %>% 
+  group_by(prostate_incident, Ances) %>% 
+  summarize(age_mean = mean(age_assessment),
+            age_sd = sd(age_assessment),
+            height_mean = mean(Height),
+            height_sd = sd(Height),
+            bmi_mean = mean(BMI),
+            bmi_sd = sd(BMI)) 
+
+
+# Save the summary variables
+table1 = table1 %>% list_assign(gen_dist = describe_summ
+                                )
+
+```
+
+I want to do individual metrics, such as family history, education, and income, but I haven't pulled the data yet so that will come in a later code chunk. Here is the chunk for family history and education
+
+```{r}
+```
+
+
+---------------------------------------------------------------------------------------
+
+
+### Extra Analyses
+
+This is a place for extra analyses that I don't think I would need to edit repetitively, but still need to be in this document since it incorporates the 451 variant PRS and my different ancestries
+
+
+#### Interaction Co-linearity
+
+I'm curious if my interaction models are wonky because the main effect and the interaction effect have very high correlation and thus cause co-linearity.
+
+
+```{r}
+keep_variables = c("data_df", "keep_variables", "ses_factors",
+                   "ances","ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create a new data frame that creates interaction columns between my SES factors and PRS
+corr_df = data_df %>% select(eid, PRS, contains(ses_factors)) %>% 
+  mutate(across(ses_factors, ~ .*PRS, .names = "{.col}*PRS")
+  )
+
+# Now calculate the correlation
+interaction_corr = correlate(corr_df %>% select(-eid))
+interaction_corr
+```
+
+
+
+#### Binary SES*PRS Models
+
+My current interaction models are possibly inaccurate due to small samples sizes and co-linearity. To understand the interaction between my SES and PRS terms, I am going to make all my indices and PRS as a 0/1 binary variable.
+
+The interaction term will now represent high deprivation and high PRS to be more interpretable
+
+```{r}
+keep_variables = c("data_df", "keep_variables", "ses_factors",
+                   "ances","ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances_exclude){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+  model_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    # Make symbol for coding sake 
+      i = sym(i)
+    
+    # Create new data frame with binary data for each of the SES factors and for PRS
+      temp_df = data_split %>% drop_na( !!i ) %>% 
+        mutate(High_Deprivation = as.factor( ntile(!!i,2) - 1 ) 
+               ) %>% 
+        mutate(High_PRS = as.factor( ntile(PRS,2) - 1 ) 
+               )
+      
+      # Run models of interest
+      formula = paste0("prostate_case ~ High_Deprivation + High_PRS + High_Deprivation*High_PRS", 
+                       " + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = temp_df)
+    
+      # Tidy the data from the model
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) %>% 
+        .[-c(1,4:15),]
+    
+      
+      # Keep only relevant results before saving it in the model
+      model_results[[i]] <- OR
+      
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+    # Then add to summary data_frame
+    summ_df = results_df %>% 
+      mutate(ancestry = j) %>% 
+      rbind(summ_df, .)
+
+}
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/binary_ses_models_2023.12.01.csv")
+```
+
+I want to plot these results and also make a 2*2 table for each of the high deprivation or PRS groups
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+for (j in ances_exclude){
+
+  print(j)
+  
+  plotting_df = summ_df %>%
+    filter(ancestry == j) %>% 
+    mutate(SES_Binary = as.factor(paste0(ses, "-",term)))
+
+  
+  # Create a plot
+  ses_plot = plotting_df %>% filter(str_detect(term, "PRS",negate = T)) %>% 
+                ggplot(aes(x = OR, y = SES_Binary, xmin = low95, xmax = up95, color = ses_factors)
+                       ) +
+                geom_pointrange(show.legend = FALSE) +
+                geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+                labs(x = "Odds Ratio (95% CI)", y = "SES") +
+                ggtitle(paste0("Prostate Cancer ~ Deprivation (50% High/Low Split) - ", j)
+                        )+
+                theme_minimal()
+  
+  int_plot = plotting_df %>% filter(str_detect(term, ":")) %>% 
+                ggplot(aes(x = OR, y = SES_Binary, xmin = low95, xmax = up95, color = ses_factors)
+                       ) +
+                geom_pointrange(show.legend = FALSE) +
+                geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+                labs(x = "Odds Ratio (95% CI)", y = "SES") +
+                ggtitle(paste0("Prostate Cancer ~ Deprivation*PRS Interaction - ", j)
+                        )+
+                theme_minimal()
+  
+  prs_plot = plotting_df %>% filter(str_detect(term, "PRS"), str_detect(term, ":", negate = T)) %>% 
+              ggplot(aes(x = OR, y = SES_Binary, xmin = low95, xmax = up95, color = ses_factors)) +
+              geom_pointrange(show.legend = T) +
+              geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+              labs(x = "Odds Ratio (95% CI)", y = "Ancestry") +
+              ggtitle(paste0("Prostate Cancer ~ PRS (50% High/Low Split) - ", j)
+                      ) +
+              theme_minimal()
+  
+  print(ses_plot)
+  print(int_plot)
+  print(prs_plot)
+
+}
+
+
+```
+
+
+
+#### Standardize SES*PRS Models
+
+While I plan to standardize all my models in the future, my main concern is to standardize the SES and PRS values for the interaction model. Once I do this and have an expectation for the result, I will standardize my variables for future models.
+
+```{r}
+keep_variables = c("data_df", "keep_variables", "ses_factors",
+                   "ances","ances_exclude") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances_exclude){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+  model_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    
+    # Create symbol for coding reason
+    i = sym(i)
+    
+    # Calculate the standardized data for the Deprivation index of interest
+      temp_df = data_split %>% drop_na(!!i) %>% 
+        mutate(Deprivation_z = scale(!!i)[,1]
+               )
+    
+    # Run models of interest
+      formula = paste0("prostate_case ~ Deprivation_z + PRS_z + Deprivation_z*PRS_z", 
+                       " + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = temp_df)
+    
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) 
+    
+      # Pull specific results before saving
+      model_results[[i]] <- OR[c(2,3,16),]
+      
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+    # Then add to summary data_frame
+    summ_df = results_df %>% 
+      mutate(ancestry = j) %>% 
+      rbind(summ_df, .)
+
+}
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/interaction_standardized_models_2023.12.12.csv")
+
+```
+
+Now the plotting
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+for (j in ances_exclude){
+
+  print(j)
+  
+  plotting_df = summ_df %>%
+    filter(ancestry == j) 
+  
+  # Create a plot
+  ses_plot = plotting_df %>% filter(str_detect(term, "PRS_z",negate = T)) %>% 
+                ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)
+                       ) +
+                geom_pointrange(show.legend = FALSE) +
+                geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+                labs(x = "Odds Ratio (95% CI) ", y = "SES") +
+                ggtitle(paste0("Prostate Cancer ~ Deprivation (SD Step) - ", j)
+                        )+
+                theme_minimal()
+  
+  int_plot = plotting_df %>% filter(str_detect(term, ":")) %>% 
+                ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)
+                       ) +
+                geom_pointrange(show.legend = FALSE) +
+                geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+                labs(x = "Odds Ratio (95% CI)", y = "SES") +
+                ggtitle(paste0("Prostate Cancer ~ Deprivation*PRS Interaction - ", j)
+                        )+
+                theme_minimal()
+  
+  prs_plot = plotting_df %>% filter(str_detect(term, "PRS_z"), str_detect(term, ":", negate = T)) %>% 
+              ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)) +
+              geom_pointrange(show.legend = T) +
+              geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+              labs(x = "Odds Ratio (95% CI)", y = "SES") +
+              ggtitle(paste0("Prostate Cancer ~ PRS (SD Step) - ", j)
+                      ) +
+              theme_minimal()
+  
+  print(ses_plot)
+  print(int_plot)
+  print(prs_plot)
+
+}
+
+```

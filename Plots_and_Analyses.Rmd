@@ -1,0 +1,2066 @@
+---
+title: Plots_and_Analyses.R
+author: jjudd5
+date: '2023-05-31'
+output: html_notebook
+---
+
+### Introduction:
+
+The goal of this file is to load the data file that includes PRS, Cancer, and SES to make some introductory plots and analyses (regressions)
+
+### Packages:
+
+```{r include = F}
+# Reset environment and set right directory
+rm(list = ls())
+.libPaths(c("~/R/x86_64-pc-linux-gnu-library/4.0",.libPaths()) 
+)
+           
+
+# Load packages:
+library(tidyverse)
+library(data.table)
+library(readxl)
+library(tidymodels)
+library(corrr)
+library(ggpubr)
+library(devtools)
+library(introdataviz)
+library(leaps)
+library(caret)
+library(oddsratio)
+
+```
+
+### Load the necessary data
+
+This load and edits the necessary data file to do my analses
+
+```{r}
+data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2023.10.12.csv")
+
+# Minor new definition of a function to be used later in this code block
+`%notin%` = Negate(`%in%`)
+
+
+# I also want to make sure to have new cancer variables that I can plug into my models. 
+data_df = data_raw %>% 
+  #First, I want a variable that counts any prostate cancer as case and no cancer at all as the control. 
+  # If no prostate cancer, but other cancer, then that is NA
+  mutate(prostate_case = if_else(prostate == 1, 1, 
+                                 if_else(case == 1, NA, 0)
+                                 )
+         ) %>% 
+  # I also want to include a measure of incident cancer
+  mutate(prostate_incident = if_else(prostate == 1 & prostate_incid_any == 0, NA,
+                                     if_else(prostate_incid_any == 0 & case == 0, 0, 
+                                             if_else(prostate_incid_any == 1, 1, NA))
+                                     )
+         ) %>% 
+  # I also want prevalent cancer
+  mutate(prostate_prevalent = if_else(prostate_incid_any == 1, NA,
+                                      if_else(prostate==0 & prostate_incid_any==0 & case ==0, 0, 
+                                              if_else(prostate==1 & prostate_incid_any==0, 1, NA))
+                                      )
+         ) %>% 
+  # Make all of these factors
+  mutate(prostate_case = as.factor(prostate_case),
+         prostate_incident = as.factor(prostate_incident),
+         prostate_prevalent = as.factor(prostate_prevalent)) %>% 
+  # Remove non-NA's for screening PSA
+  filter(!is.na(PSA_Screening)) %>% 
+  # I want to remove non-UK assessment centers
+  filter(Assessment_Centre %notin% c(11023, 11022, 11003, 11005, 11004)
+  ) %>% 
+  # I also want assessment center and the smoking to be a factor
+  mutate(Assessment_Centre = as.factor(Assessment_Centre),
+         Household_Smoking = as.factor(Household_Smoking)) %>% 
+  # Also since I only use the English IMD, I'm gonna remove the E
+  rename_with(.cols = contains("_E"), 
+              ~ str_split_i(.,"_",1))
+
+
+```
+
+### SES Variable Selection:
+
+This is where I define the SES variables that are used throughout the models
+
+```{r}
+ses_factors = names(data_df) %>% last(39) %>% .[c(1:8,26)]
+ses_factors
+```
+
+### Consolidated Main Models [MAIN MODELS v2]
+
+Due to the amount of data/models I have, I am creating a new section that pulls the main models from the previous works into a single section. This section is also useful since I will probably make a lot of varitions on these models and I don't need to go deep in the code to do it, and I know that those minor changes are all happening in one spot
+
+This includes:
+
+-   SES Continuous Quartile Models, SES Discrete Quartile Model, SES Continuous IQR model
+
+-   Basic PSA Model
+
+-   Basic PRS Models
+
+-   PRS\*SES Models
+
+-   Stratified SES and PRS Models
+
+Let's start with:
+
+#### Continuous Quartile model
+
+```{r}
+model_results_quartile_cont = list()
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", 
+                   "model_results_quartile_cont") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Now create a loop that models the variables of interest and then saves them to a list of models
+# Each loop will run a model for total, incidence, and prevalent cases
+
+for (i in ses_factors){
+
+# Make symbol for coding sake 
+  i = sym(i)
+
+# Create new data frame with quartile and rank data for each of the SES factors 
+# I have 2 separate models for quartiles. One which is continuous and the other which is discrete
+  temp_df = data_df %>% drop_na( !!i ) %>% 
+    mutate(Quartile_cont = ntile(!!i,4)) 
+
+# Have the model with the quartiles continuous model  
+  model = logistic_reg() %>% 
+    fit(prostate_case ~ Quartile_cont + age_assessment +
+          PSA_Screening + genotyping.array, data = temp_df)
+
+# Save the quartiles model 
+  OR = tidy(model, exponentiate = T) %>% 
+    rename(OR = estimate) %>% 
+    mutate(low95 = exp(log(OR) - 1.96*std.error), 
+           up95 = exp(log(OR) + 1.96*std.error)) %>% 
+    select(-std.error, -statistic) 
+
+  model_results_quartile_cont[[i]] <- OR
+
+
+
+# Benchmark that this set of model is complete 
+print(i)
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+
+# Save the models
+results_quartile_cont_df = list_rbind(model_results_quartile_cont, names_to = "ses") 
+
+# And now export these models.
+results_quartile_cont_df %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/quartile_cont_ses_models_2023.10.17.csv")
+
+```
+
+Then are the plots for the continuous quartile models
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+results_quartile_cont_plotting = results_quartile_cont_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL"))
+
+
+# Create a plot for quartiles continuous
+results_quartile_cont_plotting %>% 
+  ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses)) +
+  geom_pointrange() +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "Odds Ratio", y = "SES") +
+  ggtitle("Continuous Quartiles SES Odds Ratios with 95% CI") +
+  xlim(0.85, 1.1) +
+  theme_minimal() 
+```
+
+------------------------------------------------------------------------
+
+#### Discrete Quartile model
+
+I previously messed up my contintinuous quartile model. Aparently, thats not how you do it. If I was separating my data into quartiles, I should just keep it discrete and compare groups. I will include that code here. he fixed continuous model will be later
+
+```{r}
+model_results_quartile_discrete = list()
+
+keep_variables = c("data_df", "keep_variables", "ses_factors",
+                   "model_results_quartile_discrete") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Now create a loop that models the variables of interest and then saves them to a list of models
+# Each loop will run a model for total, incidence, and prevalent cases
+
+for (i in ses_factors){
+
+# Make symbol for coding sake 
+  i = sym(i)
+
+# Create new data frame with quartile and rank data for each of the SES factors 
+# I have 2 separate models for quartiles. One which is continuous and the other which is discrete
+  temp_df = data_df %>% drop_na( !!i ) %>% 
+    mutate(Quartile_ = as.factor( ntile(!!i,4) ) 
+           )
+
+# Repeat for discrete continuous
+  model = logistic_reg() %>% 
+    fit(prostate_case ~ Quartile_ + age_assessment + PSA_Screening + genotyping.array, data = temp_df)
+
+  OR = tidy(model, exponentiate = T) %>% 
+    rename(OR = estimate) %>% 
+    mutate(low95 = exp(log(OR) - 1.96*std.error), 
+           up95 = exp(log(OR) + 1.96*std.error)) %>% 
+    select(-std.error, -statistic) 
+
+  model_results_quartile_discrete[[i]] <- OR
+  
+
+# Benchmark that this set of model is complete 
+print(i)
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+
+# Save the models
+results_quartile_discrete_df = list_rbind(model_results_quartile_discrete, names_to = "ses") 
+
+
+# And now export these models.
+results_quartile_discrete_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/quartile_discrete_ses_models_2023.10.17.csv")
+
+```
+
+Now the plotting
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+results_quartile_discrete_plotting = results_quartile_discrete_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL")) %>% 
+  mutate(SES_Quartile = as.factor(paste0(ses, "-",term))
+         )
+
+
+# Create a plot for quartiles continuous
+results_quartile_discrete_plotting %>% 
+  ggplot(aes(x = OR, 
+             y = SES_Quartile, 
+             xmin = low95, xmax = up95, color = ses)) +
+  geom_pointrange() +
+  scale_y_discrete(limits = rev(levels(results_quartile_discrete_plotting$SES_Quartile))
+                   ) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "Odds Ratio", y = "SES Quartile") +
+  ggtitle("Discrete Quartiles SES Odds Ratios with 95% CI") +
+  xlim(0.85, 1.1) +
+  theme_minimal()
+```
+
+------------------------------------------------------------------------
+
+#### Continuous SES Models
+
+Now is th corrected continuous SES models. I'm basically going to transform it such that the OR measures an increase in the IQR. John provided a package I can use to adjust that.
+
+I'm also going to use specifically incident cases that is useful for interpreation and meaning of my results, and it can be easily changed in the future. There's probably a future where I want the all/incident/prevalent comparison. But that's not now
+
+```{r}
+model_results_incident = list()
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", "model_results_incident") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Now create a loop that models the variables of interest and then saves them to a list of models
+for (i in ses_factors){
+
+
+# Repeat for incident cases
+    incident_formula = paste("prostate_incident ~ ",i, " + age_assessment + PSA_Screening + genotyping.array") %>% as.formula()
+    model_incident = logistic_reg() %>% fit(incident_formula, data = data_df)
+
+    # I also want to adjust the beta to account for a IQR change so I need to do some manipulation
+    ses_iqr = data_df %>% pull(i) %>% IQR(na.rm = T)
+    
+    # Compared to other models, I don't log the estimate because I didn't previously exponentiate it
+    OR_incident = tidy(model_incident) %>% 
+      mutate(estimate = ses_iqr*estimate, 
+             std.error = ses_iqr*std.error) %>% 
+      mutate(OR = exp(estimate),
+             low95 = exp(estimate - 1.96*std.error), 
+             up95 = exp(estimate + 1.96*std.error)) %>%
+      select(-std.error, -statistic, -estimate) %>% 
+      select(term, OR, p.value, low95, up95)
+
+model_results_incident[[i]] <- OR_incident
+
+
+
+# Benchmark that this set of model is complete
+print(i)
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# And now export these models.
+# Incident cases
+list_rbind(model_results_incident, names_to = "ses") %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/incident_ses_models_2023.10.17.csv")
+
+
+```
+
+Now the code for the plots
+
+```{r}
+# Change the lists into dfs and combine
+results_incident_df = list_rbind(model_results_incident, names_to = "ses") 
+
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+model_results_plotting = results_incident_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL" )) 
+
+# Create a plot
+model_results_plotting %>% 
+  ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses_factors)
+         ) +
+  geom_pointrange(show.legend = FALSE) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "Odds Ratio (95% CI)", y = "SES") +
+  ggtitle("Prostate Cancer ~ Deprivation (IQR Step)") +
+  xlim(0.75, 1.25) +
+  theme_minimal()
+
+
+```
+
+------------------------------------------------------------------------
+
+#### Basic PSA Screening Model
+
+Since I'm going to use PSA Screening a lot, I'm also going to make a model for that here. I'm going to use the continuous IQR-step model since that is the broadest and usable for a nearby presentation
+
+```{r}
+# Set up
+model_results_PSAoutcome = list() 
+
+
+data_controls = data_df %>% filter(prostate_case == 0) %>% mutate(PSA_Screening = as.factor(PSA_Screening))
+keep_variables = c("data_df", "data_controls", "keep_variables", "ses_factors", 
+                   "model_results_PSAoutcome") 
+
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+for (i in ses_factors){
+
+# Create the total cases model for the ses, edit the output, and then save in the list 
+  formula = paste0("PSA_Screening ~", i, " + age_assessment") %>% as.formula()
+  model = logistic_reg() %>% fit(formula, data = data_controls)
+
+#I also want to adjust the beta to account for a IQR change so I need to do some manipulation
+  ses_iqr = data_df %>% pull(i) %>% IQR(na.rm = T)
+    
+    # Compared to other models, I don't log the estimate because I didn't previously exponentiate it
+    OR = tidy(model) %>% 
+      mutate(estimate = ses_iqr*estimate, 
+             std.error = ses_iqr*std.error) %>% 
+      mutate(OR = exp(estimate),
+             low95 = exp(estimate - 1.96*std.error), 
+             up95 = exp(estimate + 1.96*std.error)) %>%
+      select(-std.error, -statistic, -estimate) %>% 
+      select(term, OR, p.value, low95, up95)
+
+model_results_PSAoutcome[[i]] <- OR
+
+# Benchmark that this set of model is complete 
+print(i) 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# Export models
+results_df = list_rbind(model_results_PSAoutcome, names_to = "ses")
+results_df %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/PSA_outcome_ses_models_2023.10.18.csv") 
+
+```
+
+And then the basic plots
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+model_results_plotting = results_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL" )) 
+
+# Create a plot
+model_results_plotting %>% 
+  ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, color = ses)) +
+  geom_pointrange(show.legend = FALSE) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "Odds Ratio (95% CI)", y = "SES") +
+  xlim(0.75,1.25) +
+  ggtitle("Ever PSA Screened ~ Deprivation (IQR Step)") +
+  theme_minimal()
+
+
+```
+
+------------------------------------------------------------------------
+
+#### Basic PRS model
+
+------------------------------------------------------------------------
+
+#### Basic SES \* PRS Model
+
+------------------------------------------------------------------------
+
+#### Stratified PRS, SES Model
+
+I'm finally making the updated version of the model where I take the stratified PRS samples and find the SES association.
+
+BIGGEST NOTE. I am using the IQR-step version of the analysis where the unit change is an IQR and not the continuous quartile step.
+
+```{r}
+# Set up list for models and remove excess variables
+model_results = list() 
+
+keep_variables = c("keep_variables", "data_df",  "ses_factors", "model_results",
+                   "StratPRS_df") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create new data frame with quartiles for the PRS that I can use
+StratPRS_df = data_df %>% 
+  drop_na(PRS) %>% 
+  mutate(PRS_quartile = as.factor(ntile(PRS,4))
+        )
+
+# Now a for loop to go through the ses variables save the model
+for (ses in ses_factors){
+  
+  # And then create a second loop for the quartile data
+  for (quart in 1:4){
+  
+    # Select data for this quartile 
+    # Also place individuals into quartiles of their SES so all the metrics are comparable
+    quart_df = StratPRS_df  %>% 
+      filter(PRS_quartile == quart) 
+    
+    # Create the model formula and the model
+    formula =  paste0("prostate_case ~ ", ses ," + age_assessment + PSA_Screening") %>%
+      as.formula() 
+    model = logistic_reg() %>% 
+      fit(formula, data = quart_df)
+    
+    # I also want to adjust the beta to account for a IQR change so I need to do some manipulation
+    ses_iqr = data_df %>% pull(ses) %>% IQR(na.rm = T)
+    
+    # Format the results
+    results = tidy(model) %>% 
+      mutate(estimate = ses_iqr*estimate, 
+             std.error = ses_iqr*std.error) %>% 
+      mutate(OR = exp(estimate),
+             low95 = exp(estimate - 1.96*std.error), 
+             up95 = exp(estimate + 1.96*std.error)) %>%
+      select(-std.error, -statistic, -estimate) %>% 
+      select(term, OR, p.value, low95, up95)
+    
+    
+    # Save the model with a name containing the ses and quartile
+    model_name = paste0(ses,"-",quart)
+    model_results[[model_name]] <- results
+    
+    # Benchmark this element
+    print(model_name)
+    
+  }
+
+
+  # Benchmark that this set of model is complete 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# Save the models as a df
+model_results_df = list_rbind(model_results, names_to = "ses")
+
+# And now export these models.
+model_results_df %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/StratifiedPRS_ses_models_2023.11.10.csv")
+
+```
+
+Now make corresponding plots
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+model_results_plotting = model_results_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL" )) %>% 
+  mutate(Index = str_split_i(ses, "-", 1))
+
+# Change order of ses for plotting
+ses_order = str_sort(model_results_plotting$ses, decreasing = T) 
+
+model_results_plotting = model_results_plotting %>% 
+  mutate(ses = factor(ses, 
+                      levels = ses_order))
+
+
+
+# Create a plot
+model_results_plotting %>% 
+  ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, colour = Index)) +
+  geom_pointrange() +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "OR", y = "Deprivation - PRS Quartile") +
+  ggtitle("Deprivation Odds Ratios (IQR Step) Stratified by PRS Quartile") +
+  theme_minimal() 
+
+
+# Make a plot where I only have a few of the indices for clarity sake
+model_results_plotting2 = model_results_plotting %>% 
+  filter(Index %in% c("Main Effect","Health", "Housing", "IMD"))  %>% 
+  mutate(ses = factor(ses))
+
+model_results_plotting2 %>% 
+  ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, colour = Index)) +
+  geom_pointrange() +
+  xlim(2,3) +
+  geom_vline(xintercept = 2.507, linetype = "dashed", color = "red") +
+  labs(x = "Odds Ratio", y = "Deprivation Quartile") +
+  ggtitle("PRS Odds Ratios with 95% Confidence Intervals") +
+  theme_minimal() 
+
+
+```
+
+------------------------------------------------------------------------
+
+#### Stratified SES, PRS Model
+
+Now I want the final base model that I will consider standard. That is the model where I stratify on SES and do a PrCa\~PRS logistic regression models.
+
+First is generating the model
+
+```{r}
+# Set up list for models and remove excess variables
+model_results = list() 
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", "model_results") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# I have an initial for loop to go through each of the ses variables
+for (ses in ses_factors){
+
+# Make symbol for coding sake 
+  ses = sym(ses)
+
+# Create new data frame with Quartiles that I can loop through
+  temp_df = data_df %>% 
+    drop_na( !!ses ) %>% 
+    mutate(Quartile = as.factor(ntile(!!ses,4)) 
+      
+     )
+
+  # Now a for loop to go through the Quartiles 
+  for (quart in 1:4){
+    
+    # Pull only the Quartile data of interest
+   quart_df = temp_df %>% filter(Quartile == quart)
+    
+    # Create the model formula and the model
+    formula =  paste0("prostate_case ~ PRS + age_assessment + PSA_Screening + genotyping.array ", str_flatten(str_c("+ PC",1:10))) %>% 
+      as.formula() 
+    model = logistic_reg() %>% fit(formula, data = quart_df)
+    
+    # Format the results
+    results = tidy(model, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+    
+    # Save the model with a name containing the ses and Quartile
+    ses = as.character(ses)
+    model_name = paste0(ses,"-",quart)
+    model_results[[model_name]] <- results
+    
+    # Benchmark this element
+    print(model_name)
+
+     
+  }
+
+  # Benchmark that this set of model is complete 
+  rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+
+# Save the models as a df
+model_results_df = list_rbind(model_results, names_to = "ses")
+
+# And now export these models.
+model_results_df %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/StratifiedSes_prs_models_2023.10.17.csv")
+
+```
+
+And now plotting
+
+```{r}
+# Edit the data frame to only contain the PRS OR and also label the specific SES variable
+model_results_plotting_raw = model_results_df %>% 
+  filter(term == "PRS") %>% 
+  mutate(Index = str_split_i(ses, "-", 1))
+
+# I also want to add a row of the base PRS OR from non-stratified data
+base_effect = data.frame(ses = "Main Effect",
+                         term = "PRS",
+                         OR = 2.507,
+                         p.value = 0,
+                         low95 = 2.441,
+                         up95 = 2.576,
+                         Index = "Main Effect")
+                         
+ses_order = str_sort(model_results_plotting_raw$ses, decreasing = T) %>% c(.,"Main Effect")
+
+model_results_plotting = model_results_plotting_raw %>% 
+  rbind(base_effect) %>% 
+  mutate(ses = factor(ses, 
+                      levels = ses_order))
+
+# Create a plot
+model_results_plotting %>% 
+  ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, colour = Index)) +
+  geom_pointrange() +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "Odds Ratio", y = "Deprivation Quartile") +
+  ggtitle("PRS Odds Ratios with 95% Confidence Intervals") +
+  theme_minimal() 
+
+
+# Also create a second plot focusing on the base
+model_results_plotting %>% 
+  ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, colour = Index)) +
+  geom_pointrange() +
+  xlim(2,3) +
+  geom_vline(xintercept = 2.507, linetype = "dashed", color = "red") +
+  labs(x = "Odds Ratio", y = "Deprivation Quartile") +
+  ggtitle("PrCa ~ PRS Odds Ratios with 95% CI") +
+  theme_minimal() 
+
+# Make a plot where I only have a few of the indices for clarity sake
+model_results_plotting2 = model_results_plotting %>% 
+  filter(Index %in% c("Main Effect","Health", "Housing", "IMD"))  %>% 
+  mutate(ses = factor(ses))
+
+model_results_plotting2 %>% 
+  ggplot(aes(x = OR, y = ses, xmin = low95, xmax = up95, colour = Index)) +
+  geom_pointrange() +
+  xlim(2,3) +
+  geom_vline(xintercept = 2.507, linetype = "dashed", color = "red") +
+  labs(x = "Odds Ratio", y = "Deprivation Quartile") +
+  ggtitle("PRS Odds Ratios with 95% Confidence Intervals") +
+  theme_minimal() 
+
+
+```
+
+### Distribution of Data
+
+I need to create a table1. This is basically my understanding the distributions and numbers of my data. I specifically want to know the counts for cases and controls across different groups
+
+```{r}
+# Create a list of variables to save my results
+table1 = list()
+```
+
+I first want to characterize the distribution of my cases/controls/prevalence across the different nSES/PRS quartiles.
+
+```{r}
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# I'm basically going to want a lot of data that takes into account the quartile of SES so I'm going to create lasting variables that keep track of that
+data_split = data_df
+
+for (i in ses_factors){
+
+# Make symbol for coding sake 
+  sym_i = sym(i)
+
+  data_split = data_split %>% drop_na( !!sym_i ) %>% 
+    mutate(temp = ntile(!!sym_i,4)) %>% 
+    rename_with( ~ paste0(i, "_quartile"), matches("temp"))
+}
+
+data_split = data_split %>% drop_na(PRS) %>% 
+  mutate(PRS_quartile = ntile(PRS,4))
+
+
+
+# I can now basically use this split dataset to pull things like the case/controls (and thus prevalence for the different groups that I care about)
+# Let's start by pulling the nSES variables, their quartiles, and the case/controls. I also need this data longer
+split_prev = data_split %>% 
+  select(contains( c("eid", 
+                     "quartile", 
+                     "prostate_incident")) 
+         ) %>% 
+  pivot_longer(cols = contains("quartile"),names_to = "Domain", values_to = "Quartile")
+
+
+# I will now summarize this data to categorize case/controls as well as prevalence at the end
+prev_summ =  split_prev %>% 
+  group_by(Domain, Quartile, prostate_incident) %>% 
+  summarize(Count = n()) %>% 
+  na.omit()
+
+prev_summ2 = prev_summ %>% 
+  pivot_wider(names_from = prostate_incident, values_from = Count) %>% 
+  rename(Controls = "0", Cases = "1") %>% 
+  mutate(Prevalence = round(Cases/Controls,2)
+         ) 
+
+# Save the summary variables
+table1 = table1 %>% list_assign(nSES_dist = list(prev_summ,prev_summ2)
+                                )
+
+```
+
+I'm also interested in the split of PSA screening for different SES groups for both cases and controls. I may not end up splitting the data by SES in the end, but that can be a later transofrmation
+
+```{r}
+
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# I'm basically going to want a lot of data that takes into account the quartile of SES so I'm going to create lasting variables that keep track of that
+data_split = data_df
+
+for (i in ses_factors){
+
+# Make symbol for coding sake 
+  sym_i = sym(i)
+
+  data_split = data_split %>% drop_na( !!sym_i ) %>% 
+    mutate(temp = ntile(!!sym_i,4)) %>% 
+    rename_with( ~ paste0(i, "_quartile"), matches("temp"))
+}
+
+data_split = data_split %>% drop_na(PRS) %>% 
+  mutate(PRS_quartile = ntile(PRS,4))
+
+
+# I can now use this to split cases and controls, and then count the PSA screened inds.
+split_psa = data_split %>% 
+  select(contains( c("eid", 
+                     "quartile", 
+                     "prostate_incident",
+                     "PSA_Screening")) 
+         ) %>% 
+  pivot_longer(cols = contains("quartile"),names_to = "Domain", values_to = "Quartile")
+
+
+# I will now summarize this data to categorize case/controls as well as rate of screening
+psa_summ =  split_psa %>% 
+  group_by(Domain, Quartile, prostate_incident, PSA_Screening) %>% 
+  summarize(Count = n()) %>% 
+  na.omit()
+
+psa_summ2 = psa_summ %>% 
+  pivot_wider(names_from = prostate_incident, values_from = Count) %>% 
+  rename(Controls = "0", Cases = "1")
+```
+
+This saved dataset is somewhat raw. I can come back to split it 2 ways:
+
+1.  Find the never/ever screened for each SES
+
+2.  Plot the contingency table for screening and case controls (which I have somewhere else).
+
+3.  Count the number of screened in each SES for cases/controls
+
+    Honestly, let's just do that here.
+
+```{r}
+# First is calculate the never/ever screened per SES group
+ses_psa = psa_summ2 %>% 
+  mutate(Count = Controls + Cases) %>% 
+  select(-c(Controls,Cases)) %>% 
+  pivot_wider(names_from = PSA_Screening, values_from = Count) %>% 
+  rename(Never_Screened = "0", Ever_Screened = "1")
+
+# Next is calculate the 2x2 between screening and case/controls
+case_psa = psa_summ2 %>% 
+  ungroup() %>% 
+  select(-c(Domain,Quartile)) %>% 
+  group_by(PSA_Screening) %>% 
+  summarize(Controls = sum(Controls),
+            Cases = sum(Cases))
+
+# Lastly is remove non-screened people's and that's it
+ses_case = psa_summ2 %>% 
+  filter(PSA_Screening == 1) %>% 
+  select(-PSA_Screening) %>% 
+  rename(Controls_Screened = Controls,
+         Cases_Screened = Cases)
+
+# Now I can save these 3 tables for later
+table1 = table1 %>% list_assign(psa_dist = list(psa_summ,psa_summ2,
+                                                ses_psa, case_psa, ses_case)
+                                )
+```
+
+There it is. I've calculated the numbers per SES variable. Now I want to do the same for other variables, such as age, height, and BMI
+
+```{r}
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Pull out the age, height, and BMI data
+data_split = data_df %>% 
+  select(contains(c("eid",
+                    "prostate_incident",
+                    "age_assessment",
+                    "height",
+                    "BMI")),
+         )
+
+# I will now summarize this data to categorize case/controls as well as prevalence at the end
+describe_summ =  data_split %>% 
+  na.omit() %>% 
+  group_by(prostate_incident) %>% 
+  summarize(age_mean = mean(age_assessment),
+            age_sd = sd(age_assessment),
+            height_mean = mean(Height),
+            height_sd = sd(Height),
+            bmi_mean = mean(BMI),
+            bmi_sd = sd(BMI)) 
+
+
+# Save the summary variables
+table1 = table1 %>% list_assign(gen_dist = describe_summ
+                                )
+
+```
+
+I want to do individual metrics, such as family history, education, and income, but I haven't pulled the data yet so that will come in a later code chunk. Here is the chunk for family history and education
+
+```{r}
+
+```
+
+### ---
+
+### Some plots to understand data distributions:
+
+I want to maek some intro plots to check that the data looks right and to do some cursory analysis
+
+```{r}
+
+#Some plots to especially use as a sanity check
+#Distribution of PRS
+(data_df %>% ggplot(aes(PRS)) + geom_histogram()) %>%
+  ggsave(filename = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Plots/prs_hist.pdf",
+         plot = .)
+
+# Distrution of IMD and Townsend
+(data_df %>% ggplot(aes(Regional_IMD)) + geom_histogram()) %>%
+  ggsave(filename = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Plots/imd_hist.pdf")
+(data_df %>% ggplot(aes(Townsend_Index)) + geom_histogram()) %>%
+  ggsave(filename = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Plots/townsend_hist.pdf")
+
+
+# Now let's do some immediate checks to see if PCa status
+(data_df %>% ggplot(aes(PRS, fill = prostate)) + geom_density()) %>%
+  ggsave(filename = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Plots/prostate_StratPrs_density.pdf")
+(data_df %>% ggplot(aes(Regional_IMD, fill = prostate)) + geom_density()) %>%
+  ggsave(filename = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Plots/prostate_StratImd_density.pdf")
+(data_df %>% ggplot(aes(Townsend_Index, fill = prostate)) + geom_density()) %>%
+  ggsave(filename = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Plots/prostate_StratTownsend_density.pdf")
+
+
+# Distrubtion of consolidated IMD and the English IMD
+data_df %>% ggplot(aes(Regional_IMD)) + geom_histogram(binwidth = 1)
+data_df %>% ggplot(aes(IMD_E)) + geom_histogram(binwidth = 1)
+
+# Distribution of IMD when separating on PCa incidence
+data_df %>% ggplot(aes(Regional_IMD)) + geom_density()
+data_df %>% ggplot(aes(Regional_IMD, fill = prostate)) + geom_density()
+
+data_df %>% ggplot(aes(Employment_E, fill = prostate)) + geom_density()
+
+# Some additional checks
+data_df %>% ggplot(aes(Regional_IMD, fill = PSA_Screening)) + geom_density()
+
+```
+
+### Screening differences for cases vs controls:
+
+I want to answer the question about how many cases and controls have been screened This feels like it can be answered using a continguency table
+
+I want to do this for all my definitions of cancer. This is any cancer, incident cancer, and prevelant cancer
+
+```{r}
+
+
+contig_case = data_df %>% select(prostate_case, PSA_Screening) %>% table()
+contig_incident = data_df %>% select(prostate_incident, PSA_Screening) %>% table()
+contig_prevalent = data_df %>% select(prostate_prevalent, PSA_Screening) %>% table()
+
+# Then just find the sum of elements
+sum(contig_case)
+contig_case
+sum(contig_incident)
+contig_incident
+sum(contig_prevalent)
+contig_prevalent
+```
+
+### Find correlations between SES factors and PSA screening:
+
+Let's set up a data frame that I will use
+
+This requires all my ses factors along with PSA screening, which is just an augment of my normal dataframe
+
+I also want PSA_screening to be numeric
+
+```{r}
+corr_df = data_df %>% select(ses_factors, PSA_Screening) %>% mutate(PSA_Screening = as.numeric(PSA_Screening) - 1)
+
+# Run the correlation
+
+corr_results = correlate(corr_df)
+corr_results
+```
+
+### Total vs Prevalent vs Incident:
+
+This set of models will analyze if there is different associations between ses factors and PCa when I look at all cancer cases, prevalent cases, and incident cases
+
+I also want to store the outputs of the model so I'm going to put them in a list and them based on the main components I actually want to store multiple different models for total cases, incident cases, and prevalent cases
+
+```{r}
+model_results_case = list() 
+model_results_incident = list()
+model_results_prevalent = list()
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", "model_results_case", "model_results_incident", "model_results_prevalent") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Now create a loop that models the variables of interest and then saves them to a list of models
+
+# Each loop will run a model for total, incidence, and prevalent cases
+
+for (i in ses_factors){
+
+    # Create the total cases model for the ses, edit the output, and then save in the list 
+    case_formula =  paste0("prostate_case ~", i, " + age_assessment + PSA_Screening + genotyping.array") %>% as.formula() 
+    model_case = logistic_reg() %>% fit(case_formula, data = data_df)
+    
+    OR_case = tidy(model_case, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+    
+    model_results_case[[i]] <- OR_case
+
+# Repeat for incident cases
+    incident_formula = paste("prostate_incident ~ ",i, " + age_assessment + PSA_Screening + genotyping.array") %>% as.formula()
+    model_incident = logistic_reg() %>% fit(incident_formula, data = data_df)
+
+    OR_incident = tidy(model_incident, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+
+model_results_incident[[i]] <- OR_incident
+
+ # Repeat for prevalent cases 
+prevalent_formula = paste("prostate_prevalent ~ ",i, " + age_assessment + PSA_Screening + genotyping.array") %>% as.formula()
+model_prevalent = logistic_reg() %>% fit(prevalent_formula, data = data_df)
+
+OR_prevalent = tidy(model_prevalent, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+
+model_results_prevalent[[i]] <- OR_prevalent
+
+# Benchmark that this set of model is complete
+print(i)
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# And now export these models.
+
+# All cases
+
+list_rbind(model_results_case, names_to = "ses") %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/allcases_ses_models_2023.06.16.csv")
+
+# Incident cases
+
+list_rbind(model_results_incident, names_to = "ses") %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/incident_ses_models_2023.06.16.csv")
+
+# Prevalent cases
+
+list_rbind(model_results_prevalent, names_to = "ses") %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/prevalent_ses_models_2023.06.16.csv")
+```
+
+Let's also make some plots to show differences in OR
+
+```{r}
+# Change the lists into dfs and combine
+results_case_df = list_rbind(model_results_case, names_to = "ses") %>% 
+  mutate(Cancer = "All")
+results_incident_df = list_rbind(model_results_incident, names_to = "ses") %>% 
+  mutate(Cancer = "Incident")
+results_prevalent_df = list_rbind(model_results_prevalent, names_to = "ses") %>% 
+  mutate(Cancer = "Prevalent")
+
+model_results_df = rbind(results_case_df,
+                         results_incident_df,
+                         results_prevalent_df)
+
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+model_results_plotting = model_results_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL" ))
+
+# Create a plot
+model_results_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, colour = Cancer)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "SES", y = "Odds Ratio") +
+  ggtitle("SES Odds Ratios with 95% Confidence Intervals") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Continuous vs Quartiles vs Rank [MAIN MODELS v1]:
+
+This analysis will run models to see if there are different effects when the IMD indices are continuous vs when I run then as discrete quartiles. This will simply be done on all cases.
+
+From the recommendation of Matt, I'm going to try to rank normalize my data to maintain the quantifiable data but alter the definition
+
+```{r}
+model_results_quartile_cont = list()
+model_results_quartile_discrete = list()
+model_results_rank = list()
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", 
+                   "model_results_quartile_cont", "model_results_quartile_discrete",
+                   "model_results_rank") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Now create a loop that models the variables of interest and then saves them to a list of models
+# Each loop will run a model for total, incidence, and prevalent cases
+
+for (i in ses_factors){
+
+# Make symbol for coding sake 
+  i = sym(i)
+
+# Create new data frame with quartile and rank data for each of the SES factors 
+# I have 2 separate models for quartiles. One which is continuous and the other which is discrete
+  temp_df = data_df %>% drop_na( !!i ) %>% 
+    mutate(Quartile_cont = ntile(!!i,4),
+           Quartile_discrete = as.factor(Quartile_cont),
+           Rank = rank( !!i ) / max(rank( !!i ) ) )
+
+# Have the model with the quartiles continuous model  
+  model = logistic_reg() %>% 
+    fit(prostate_case ~ Quartile_cont + age_assessment + PSA_Screening + genotyping.array, data = temp_df)
+
+# Save the quartiles model 
+  OR = tidy(model, exponentiate = T) %>% 
+    mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+    select(-std.error, -statistic) %>% rename(OR = estimate)
+
+  model_results_quartile_cont[[i]] <- OR
+
+# -- -- -- --
+# Repeat for discrete continuous
+  model = logistic_reg() %>% 
+    fit(prostate_case ~ Quartile_discrete + age_assessment + PSA_Screening + genotyping.array, data = temp_df)
+
+  OR = tidy(model, exponentiate = T) %>% 
+    mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+    select(-std.error, -statistic) %>% rename(OR = estimate)
+
+  model_results_quartile_discrete[[i]] <- OR
+  
+# -- -- -- --
+# Repeat for rank data 
+  model = logistic_reg() %>% 
+    fit(prostate_case ~ Rank + age_assessment + PSA_Screening + genotyping.array, data = temp_df)
+
+  OR = tidy(model, exponentiate = T) %>% 
+    mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+    select(-std.error, -statistic) %>% rename(OR = estimate)
+
+  model_results_rank[[i]] <- OR
+
+# Benchmark that this set of model is complete 
+print(i)
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+
+# Save the models
+results_quartile_cont_df = list_rbind(model_results_quartile_cont, names_to = "ses") 
+results_quartile_discrete_df = list_rbind(model_results_quartile_discrete, names_to = "ses") 
+results_rank_df = list_rbind(model_results_rank, names_to = "ses") 
+
+
+# And now export these models.
+results_quartile_cont_df %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/quartile_cont_ses_models_2023.08.28.csv")
+results_quartile_discrete_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/quartile_discrete_ses_models_2023.08.28.csv")
+results_rank_df %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/rank_ses_models_2023.08.28.csv")
+```
+
+Now lets make some plots for these analyses
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+results_quartile_discrete_plotting = results_quartile_discrete_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL")) %>% 
+  mutate(SES_Quartile = paste0(ses, "-",term))
+
+# -- -- -- 
+results_quartile_cont_plotting = results_quartile_cont_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL"))
+
+# -- -- --
+results_rank_plotting = results_rank_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL"))
+
+# Create a plot for quartiles discrete
+results_quartile_discrete_plotting %>% 
+  ggplot(aes(x = SES_Quartile, y = OR, ymin = low95, ymax = up95, color = ses)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "SES", y = "Odds Ratio") +
+  ggtitle("SES Quartiles Odds Ratios with 95% Confidence Intervals") +
+  ylim(0.85, 1.1) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Create a plot for quartiles continuous
+results_quartile_cont_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, color = ses)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "SES", y = "Odds Ratio") +
+  ggtitle("Continuous Quartiles SES Odds Ratios with 95% Confidence Intervals") +
+  ylim(0.85, 1.1) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Now the plot for rank
+results_rank_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, color = ses)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "SES", y = "Odds Ratio") +
+  ggtitle("Rank Normalized SES Odds Ratios with 95% Confidence Intervals") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### Association between SES -\> PSA:
+
+I want to run logistic regression models to see if SES are actually associated with PSA screening.
+
+I want to make sure to include models that transform the indices into continuous quartiles
+
+```{r}
+# Set up
+model_results_PSAoutcome = list() 
+model_results_quartile_cont = list()
+
+
+data_controls = data_df %>% filter(prostate_case == 0) %>% mutate(PSA_Screening = as.factor(PSA_Screening))
+keep_variables = c("data_df", "data_controls", "keep_variables", "ses_factors", 
+                   "model_results_PSAoutcome", "model_results_quartile_cont") 
+
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+for (i in ses_factors){
+
+# Create the total cases model for the ses, edit the output, and then save in the list 
+  case_formula = paste0("PSA_Screening ~", i, " + age_assessment") %>% as.formula()
+  model_case = logistic_reg() %>% fit(case_formula, data = data_controls)
+
+# Edit the results 
+  OR_case = tidy(model_case, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+
+model_results_PSAoutcome[[i]] <- OR_case
+
+# Benchmark that this set of model is complete 
+print(i) 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+
+# Export models
+list_rbind(model_results_PSAoutcome, names_to = "ses") %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/PSA_outcome_ses_models_2023.07.05.csv") 
+
+
+# -- -- -- -- -- -- -- -- -- 
+# Repeat for continuous quartiles
+
+# Now create a loop that models the variables of interest and then saves them to a list of models
+# Each loop will run a model for total, incidence, and prevalent cases
+for (i in ses_factors){
+
+# Make symbol for coding sake 
+  i = sym(i)
+
+# Create new data frame with quartile for each of the SES factors 
+# I have 2 separate models for quartiles. One which is continuous and the other which is discrete
+  temp_df = data_controls %>% drop_na( !!i ) %>% 
+    mutate(Quartile_cont = ntile(!!i,4) )
+
+# Have the model with the quartiles continuous model  
+  model = logistic_reg() %>% 
+    fit(PSA_Screening ~ Quartile_cont + age_assessment, data = temp_df)
+
+# Save the quartiles model 
+  OR = tidy(model, exponentiate = T) %>% 
+    mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+    select(-std.error, -statistic) %>% rename(OR = estimate)
+
+  model_results_quartile_cont[[i]] <- OR
+
+# Benchmark that this set of model is complete 
+print(i)
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# Save the models
+results_quartile_cont_df = list_rbind(model_results_quartile_cont, names_to = "ses") 
+# And now export these models.
+results_quartile_cont_df %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/PSA_outcome_ses_models_2023.09.26.csv")
+
+```
+
+Now to plot out the associations
+
+```{r}
+model_results_df = list_rbind(model_results_PSAoutcome, names_to = "ses")
+
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+model_results_plotting = model_results_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL" ))
+
+# Create a plot
+model_results_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, colour = ses)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "SES", y = "Odds Ratio") +
+  ggtitle("PSA ~ SES Odds Ratios with 95% Confidence Intervals") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# -- -- -- -- -- -- --
+# Repeat for the continuous quartiles models
+
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+results_quartile_cont_plotting = results_quartile_cont_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL"))
+
+# Create a plot for quartiles continuous
+results_quartile_cont_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, color = ses)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "SES", y = "Odds Ratio") +
+  ggtitle("Continuous Quartiles SES Odds Ratios with 95% Confidence Intervals") +
+  ylim(0.8, 1.2) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+
+### Step-wise Regression of English Indices
+
+Since I know a variety of the English Indices have significant associations for both PCa and PSA, I want to understand the result of me combining multiple indices together
+
+I will perform forward step-wise regression to build on variables to see how they affect each other's results. I will be doing this for my broad list of cases
+
+Earlier on, I found the correlation between indices as well as Townsend Index and PSA screening, they are highly correlated, but John thinks I should continue with this analysis
+
+Note: I also want to remove IMD_E, since that is composite
+
+```{r}
+# Set up the variables
+data_stepwise = data_df %>% 
+  select(all_of(ses_factors), -IMD_E, prostate_case, age_assessment, PSA_Screening) 
+
+# And then remove unnecessary data
+keep_variables = c("data_df", "data_stepwise", "keep_variables", "ses_factors")
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Let's try best subset
+regfit.full = regsubsets(prostate_case ~ ., data = data_stepwise)
+reg.summary = summary(regfit.full)
+opt_size = which(reg.summary$bic == min(reg.summary$bic))
+
+coef(regfit.full , opt_size)
+```
+
+From these results, I know that the best model is the one that includes Health, Crime, age, and PSA. Let's run a normal log reg model with these 4 metrics
+
+```{r}
+# Use the full data and just use the indicated indices 
+model = logistic_reg() %>% fit(prostate_case ~ Health_E + Crime_E + age_assessment + PSA_Screening, data = data_df)
+
+# Edit the results 
+  OR_case = tidy(model, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+  
+OR_case
+```
+
+Now I want to reperform this analysis, but with PSA screening as the outcome.
+
+```{r}
+# Reset environment and set up new dataset
+data_stepwise = data_df %>% 
+  filter(prostate_case == 0) %>% 
+  select(all_of(ses_factors), -IMD_E, age_assessment, PSA_Screening) %>% 
+  mutate(PSA_Screening = as.factor(PSA_Screening))
+
+
+keep_variables = c("data_df", "data_stepwise", "keep_variables", "ses_factors")
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Let's try best subset
+regfit.full = regsubsets(PSA_Screening ~ ., data = data_stepwise)
+reg.summary = summary(regfit.full)
+opt_size = which(reg.summary$bic == min(reg.summary$bic))
+
+coef(regfit.full , opt_size)
+```
+
+Interesting. So the best model seems to pretty different from the others. It includes Health and age like before, but it also includes Income, Education, Housing.
+
+This is particularly interesting since I accidently included IMD_E (composite score) in a previous version and it included IMD_E and Townsend, but now those are removed
+
+```{r}
+# Use the full data and just use the indicated indices 
+model = logistic_reg() %>% fit(PSA_Screening ~ Income_E + Health_E + Education_E + Housing_E + age_assessment, data = data_stepwise)
+
+# Edit the results 
+  OR_case = tidy(model, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+  
+OR_case
+```
+
+This result is interesting because the income variable becomes flipped. John believes that this is caused by co-linearity from income being too correlated to another of the variables. I quick test to run the model with income + 1 of the variables to see when it flips.
+
+```{r}
+
+# Let's run these models and just have the result. Start w/ combo w/ health
+OR_income_health = logistic_reg() %>% 
+  fit(PSA_Screening ~ Income_E + Health_E, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+# Then combine with education
+OR_income_education = logistic_reg() %>% 
+  fit(PSA_Screening ~ Income_E + Education_E, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+# Then combine with housing
+OR_income_housing = logistic_reg() %>% 
+  fit(PSA_Screening ~ Income_E + Housing_E, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+# Finally combine with age
+OR_income_age = logistic_reg() %>% 
+  fit(PSA_Screening ~ Income_E + age_assessment, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+
+# How do these compare
+OR_income_health
+OR_income_education
+OR_income_housing
+OR_income_age
+```
+
+Interesting result. Let's add the variables together until income flips. I imagine that it is the combination w/ Education and Health so let's start easy and just add age
+
+```{r}
+
+# Let's run these models and just have the result. Start w/ combo w/ health
+OR_income_health = logistic_reg() %>% 
+  fit(PSA_Screening ~ Income_E + Health_E + age_assessment, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+# Then combine with education
+OR_income_education = logistic_reg() %>% 
+  fit(PSA_Screening ~ Income_E + Education_E + age_assessment, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+# Then combine with housing
+OR_income_housing = logistic_reg() %>% 
+  fit(PSA_Screening ~ Income_E + Housing_E + age_assessment, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+# Finally combine with age
+OR_income_age = logistic_reg() %>% 
+  fit(PSA_Screening ~ Income_E + age_assessment, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+
+# How do these compare
+OR_income_health
+OR_income_education
+OR_income_housing
+```
+
+Oh, crazy. Income is dropping from one of the largest effects to now non-significant. Let's try one more income-centric model by combining with health and education, which now seem like drivers
+
+```{r}
+OR_income_health_education = logistic_reg() %>% 
+  fit(PSA_Screening ~ Income_E + Health_E + Education_E +age_assessment, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+OR_income_health_education
+```
+
+I finally got the flip. With the work required to add all these variables, I imagine this is co-linearity, but I will run by John. Though, now I want to see what happens when I combine Education and Health, which seem to be the most significant variables here
+
+```{r}
+OR_health_education = logistic_reg() %>% 
+  fit(PSA_Screening ~ Health_E + Education_E +age_assessment, data = data_stepwise) %>% 
+  tidy(., exponentiate = T) %>% 
+  mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) %>% 
+  rename(OR = estimate)
+
+OR_health_education
+```
+
+### Model excluding PSA screening:
+
+I want to create the original model of SES factors, but just exclude the PSA screening
+
+Measurement to see how it differs from the model and see the effect of that specific element
+
+I also want to include new models that transform this data into the continuous quartiles
+
+```{r}
+model_results_noPSA = list()
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", "model_results_noPSA") rm(list = ls()[!(ls() %in% keep_variables)])
+
+for (i in ses_factors){
+
+# Create the total cases model for the ses, edit the output, and then save in the list 
+  case_formula = paste0("prostate_case ~", i, " + age_assessment + genotyping.array") %>% as.formula() 
+  model_case = logistic_reg() %>% fit(case_formula, data = data_df)
+
+# Edit the results 
+  OR_case = tidy(model_case, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+
+model_results_noPSA[[i]] <- OR_case
+
+# Benchmark that this set of model is complete 
+print(i) 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# And now export these models.
+
+list_rbind(model_results_noPSA, names_to = "ses") %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/noPSA_ses_models_2023.06.17.csv")
+```
+
+Moving to a continuous quartile model exlcluding PSA screening
+
+```{r}
+model_results_quartile_cont = list()
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", 
+                   "model_results_quartile_cont") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Now create a loop that models the variables of interest and then saves them to a list of models
+# Each loop will run a model for total, incidence, and prevalent cases
+
+for (i in ses_factors){
+
+# Make symbol for coding sake 
+  i = sym(i)
+
+# Create new data frame with quartile and rank data for each of the SES factors 
+# I have 2 separate models for quartiles. One which is continuous and the other which is discrete
+  temp_df = data_df %>% drop_na( !!i ) %>% 
+    mutate(Quartile_cont = ntile(!!i,4) )
+
+# Have the model with the quartiles continuous model  
+  model = logistic_reg() %>% 
+    fit(prostate_case ~ Quartile_cont + age_assessment, data = temp_df)
+
+# Save the quartiles model 
+  OR = tidy(model, exponentiate = T) %>% 
+    mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+    select(-std.error, -statistic) %>% rename(OR = estimate)
+
+  model_results_quartile_cont[[i]] <- OR
+
+# Benchmark that this set of model is complete 
+print(i)
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# Save the models
+results_quartile_cont_df = list_rbind(model_results_quartile_cont, names_to = "ses") 
+
+# And now export these models.
+results_quartile_cont_df %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/noPSA_ses_models_2023.09.26.csv")
+
+```
+
+And now I can plot this data
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+results_quartile_cont_plotting = results_quartile_cont_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", 
+                        "PSA_Screening", "genotyping.arrayUKBL"))
+
+# Create a plot for quartiles continuous
+results_quartile_cont_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, color = ses)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "SES", y = "Odds Ratio") +
+  ggtitle("Continuous Quartiles SES Odds Ratios with 95% Confidence Intervals") +
+  ylim(0.85, 1.1) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+### Stratify on PSA Screening:
+
+What I want to do less is better understand the screening by stratifying my data on if they've ever had a PSA test
+
+If they've never has PSA test and I still see this effect then that's odd
+
+```{r}
+model_results_neverPSA = list() model_results_PSA = list()
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", "model_results_neverPSA", "model_results_PSA", "data_neverPSA", "data_PSA") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Stratify data
+
+data_neverPSA = data_df %>% filter(PSA_Screening == 0) 
+data_PSA = data_df %>% filter(PSA_Screening == 1)
+
+# Run the total cases model on both to see what happens
+
+for (i in ses_factors){
+
+# Create the total cases model for the ses, edit the output, and then save in the list 
+  case_formula = paste0("prostate_case ~", i, " + age_assessment + genotyping.array") %>% as.formula() 
+  model_case = logistic_reg() %>% fit(case_formula, data = data_neverPSA)
+
+# Edit the results 
+  OR_case = tidy(model_case, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+
+model_results_neverPSA[[i]] <- OR_case
+
+# Repeat the process for only people who have all had PSA tests 
+case_formula = paste0("prostate_case ~", i, " + age_assessment + genotyping.array") %>% as.formula() model_case = logistic_reg() %>% fit(case_formula, data = data_PSA)
+
+# Edit the results 
+OR_case = tidy(model_case, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+
+model_results_PSA[[i]] <- OR_case
+
+# Benchmark that this set of model is complete print(i) rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# And now export these models.
+
+list_rbind(model_results_neverPSA, names_to = "ses") %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/neverPSA_ses_models_2023.06.17.csv")
+
+# And now export these models.
+
+list_rbind(model_results_PSA, names_to = "ses") %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/allPSA_ses_models_2023.06.17.csv")
+```
+
+### Distribution of SES variables on Assessment Centers:
+
+Along with my indices, I want to include the assessment centers into my analyses to have a better understanding of how SES changes over large areas. Presumably, assessment centers cover a larger area than LSOAs in the indices and provide a scope of how much my SES variables are changing across the entire country
+
+I want to start with a analysis where I simply pull the indices and analyze them over assessment centers. To do this, I will just pull my assessment centers and the SES variables
+
+```{r}
+# Similar to previous code chunks. Remove unnecessary variables
+keep_variables = c("data_df", "keep_variables", "ses_factors") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Make a dataset w/ the centers plus SES variables
+center_df = data_df %>% select(Assessment_Centre, contains(ses_factors))
+
+# Now I want to group on the assessment center and then calculate some discriptive statistics for the SES variables per center
+center_summary = center_df %>% group_by(Assessment_Centre) %>% 
+  summarize(across(where(is.numeric), 
+                   list(mean = ~ mean(.x, na.rm = T),
+                        min = ~ min(.x, na.rm = T),
+                        max = ~ max(.x, na.rm = T),
+                        sd = ~ sd(.x, na.rm = T),
+                        IRQ = ~ IQR(.x, na.rm = T)
+                        )
+                  )
+            )
+```
+
+This provides me with the data and numbers of the distribution, but I also want to visually see the change in the distriubtion so I want to make a few plots. I'm thinking of doing a violin plot w/ a boxplot as well
+
+```{r}
+# I actually need to make the data long, which I can do with the pivot_longer function
+center_long = pivot_longer(center_df,
+                           cols = !Assessment_Centre,
+                           names_to = "Index",
+                           values_to = "Deprivation")
+
+
+# I can then make the necessary plots
+# let's make a pdf to save the plots
+pdf("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Plots/IMD_AssessmentCentres_2023.08.09.pdf")
+
+# Not make and print the plots into the pdf
+for (ses in ses_factors){
+
+  plot = center_long %>% filter(Index == ses) %>%
+          ggplot(., aes(Assessment_Centre, Deprivation)) + 
+          geom_boxplot() + 
+          theme_pubr() + 
+          theme(axis.text.x = element_text(angle = 90)) +
+          labs(title = ses)
+    
+  print(plot)
+}
+
+dev.off()
+```
+
+### Incorporating PRS into PCa \~ SES models:
+
+I want to now incorporate the PRS_269 scores that I've previously calculated into my models of PCa \~ SES. These are going to be simple models where I just add the score with the single SES variables. The SES variables are only going to be English IMD
+
+```{r}
+# Create a list to save models and remove excess variables
+model_results = list() 
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", "model_results") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+
+# Each loop will run a model for the necessary PCa ~ SES + PRS Models
+for (i in ses_factors){
+
+    # Create the model formula and the model
+    formula =  paste0("prostate_case ~ ", i, "+ PRS + age_assessment + PSA_Screening + genotyping.array ", str_flatten(str_c("+ PC",1:10))) %>% 
+      as.formula() 
+    model = logistic_reg() %>% fit(formula, data = data_df)
+    
+    # Format the results
+    results = tidy(model, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+    
+    # Save the resulting model
+    model_results[[i]] <- results
+
+
+# Benchmark that this set of model is complete
+print(i)
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# And now export these models.
+list_rbind(model_results, names_to = "ses") %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/ses_prs_models_2023.08.23.csv")
+```
+
+### Stratifying SES and modeling PCa \~ PRS
+
+Now I want to stratify my SES variables into quartiles and then see if the association between PCa and PRS changes. This can potentially reveal GxE, but also maybe bias in how the PRS is calculated
+
+This means I will run 9 \* 4 separate models for my 9 SES variables and 4 quartiles each
+
+```{r}
+# Set up list for models and remove excess variables
+model_results = list() 
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", "model_results") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# I have an initial for loop to go through each of the ses variables
+for (ses in ses_factors){
+
+# Make symbol for coding sake 
+  ses = sym(ses)
+
+# Create new data frame with Quartiles that I can loop through
+  temp_df = data_df %>% 
+    drop_na( !!ses ) %>% 
+    mutate(Quartile = as.factor(ntile(!!ses,4)) 
+      
+     )
+
+  # Now a for loop to go through the Quartiles 
+  for (quart in 1:4){
+    
+    # Pull only the Quartile data of interest
+   quart_df = temp_df %>% filter(Quartile == quart)
+    
+    # Create the model formula and the model
+    formula =  paste0("prostate_case ~ PRS + age_assessment + PSA_Screening + genotyping.array ", str_flatten(str_c("+ PC",1:10))) %>% 
+      as.formula() 
+    model = logistic_reg() %>% fit(formula, data = quart_df)
+    
+    # Format the results
+    results = tidy(model, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+    
+    # Save the model with a name containing the ses and Quartile
+    ses = as.character(ses)
+    model_name = paste0(ses,"-",quart)
+    model_results[[model_name]] <- results
+    
+    # Benchmark this element
+    print(model_name)
+
+     
+  }
+
+  # Benchmark that this set of model is complete 
+  rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+
+# Save the models as a df
+model_results_df = list_rbind(model_results, names_to = "ses")
+
+# And now export these models.
+model_results_df %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/StratifiedSes_prs_models_2023.08.28.csv")
+
+```
+
+I have the model results. I have them numerically so now I want to produce a few plots
+
+```{r}
+# Edit the data frame to only contain the PRS OR and also label the specific SES variable
+model_results_plotting = model_results_df %>% 
+  filter(term == "PRS") %>% 
+  mutate(Index = str_split_i(ses, "-", 1))
+
+# I also want to add a row of the base PRS OR from non-stratified data
+base_effect = data.frame(ses = "Base",
+                         term = "PRS",
+                         OR = 2.507,
+                         p.value = 0,
+                         low95 = 2.441,
+                         up95 = 2.576,
+                         Index = "Base")
+                         
+
+model_results_plotting = model_results_plotting %>% 
+  rbind(base_effect)
+
+# Create a plot
+model_results_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, colour = Index)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "Deprivation Quartile", y = "Odds Ratio") +
+  ggtitle("PRS Odds Ratios with 95% Confidence Intervals") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Also create a second plot focusing on the base
+model_results_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, colour = Index)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 2.441, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = 2.576, linetype = "dashed", color = "red") +
+  labs(x = "Deprivation Quartile", y = "Odds Ratio") +
+  ggtitle("PRS Odds Ratios with 95% Confidence Intervals") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Stratifying PRS and modeling PCa \~ SES
+
+I will do the reverse of the previous analysis. Now I will stratify PRS into quartiles and then see the association of SES onto PCa. The previous analysis revealed if environment influences genetic risk and this is looking at the reverse
+
+```{r}
+# Set up list for models and remove excess variables
+model_results = list() 
+
+keep_variables = c("keep_variables", "data_df",  "ses_factors", "model_results",
+                   "StratPRS_df") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create new data frame with quartiles for the PRS that I can use
+StratPRS_df = data_df %>% 
+  drop_na(PRS) %>% 
+  mutate(PRS_quartile = as.factor(ntile(PRS,4))
+        )
+
+# Now a for loop to go through the ses variables save the model
+for (ses in ses_factors){
+  
+  # And then create a second loop for the quartile data
+  for (quart in 1:4){
+  
+    # Select data for this quartile 
+    # Also place individuals into quartiles of their SES so all the metrics are comparable
+    quart_df = StratPRS_df %>% 
+      mutate(ses_quartile = ntile(!!sym(ses),
+                                  4)) %>% 
+      filter(PRS_quartile == quart) 
+    
+    # Create the model formula and the model
+    formula =  paste0("prostate_case ~ ses_quartile + age_assessment + PSA_Screening") %>%
+      as.formula() 
+    model = logistic_reg() %>% 
+      fit(formula, data = quart_df)
+    
+    # Format the results
+    results = tidy(model, exponentiate = T) %>% mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% select(-std.error, -statistic) %>% rename(OR = estimate)
+    
+    # Save the model with a name containing the ses and quartile
+    model_name = paste0(ses,"-",quart)
+    model_results[[model_name]] <- results
+    
+    # Benchmark this element
+    print(model_name)
+
+  }
+
+
+  # Benchmark that this set of model is complete 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+# Save the models as a df
+model_results_df = list_rbind(model_results, names_to = "ses")
+
+# And now export these models.
+model_results_df %>% write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/StratifiedPRS_ses_models_2023.08.28.csv")
+
+```
+
+Now make corresponding plots
+
+```{r}
+# Edit the data frame to only contain the SES variable and label 
+# Define quick helper
+`%notin%` = Negate(`%in%`)
+
+model_results_plotting = model_results_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", "PSA_Screening" )) %>% 
+  mutate(Index = str_split_i(ses, "-", 1))
+
+
+# Create a plot
+model_results_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, colour = Index)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "PRS Quartile", y = "Odds Ratio") +
+  ggtitle("SES Quartiles Odds Ratios with 95% Confidence Intervals") +
+  ylim(0.85, 1.1) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### DEATH
+
+DEATH!!!!!!
+
+```{r}
+
+# Load files
+death_df = fread('/labs/jswitte/Data/ShowcaseDloads/death.txt')
+death_causes_df = fread('/labs/jswitte/Data/ShowcaseDloads/death_cause.txt')
+```
+
+### Age Interaction Models
+
+I was recommended to include Age^2^ and Age^3^ terms into my model. There is a possibility that the risk of PrCa doesn't increase linearly, but by another patterns.
+
+I'm going to test this by starting with these additional terms for my base PrCa \~ nSES models, including PSA screening, and then run it for the later models if something cool happens
+
+```{r}
+model_results_quartile_cont = list()
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", 
+                   "model_results_quartile_cont") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Now create a loop that models the variables of interest and then saves them to a list of models
+# Each loop will run a model for total, incidence, and prevalent cases
+
+for (i in ses_factors){
+
+# Make symbol for coding sake 
+  i = sym(i)
+
+# Create new data frame with quartile and rank data for each of the SES factors 
+# I have 2 separate models for quartiles. One which is continuous and the other which is discrete
+  temp_df = data_df %>% drop_na( !!i ) %>% 
+    mutate(Quartile_cont = ntile(!!i,4),
+           Quartile_discrete = as.factor(Quartile_cont),
+           Rank = rank( !!i ) / max(rank( !!i ) ) ) %>% 
+    mutate(Age2 = age_assessment^2,
+           Age3 = age_assessment^3)
+
+# Have the model with the quartiles continuous model  
+  model = logistic_reg() %>% 
+    fit(prostate_case ~ Quartile_cont + age_assessment + Age2 + Age3 +
+          PSA_Screening + genotyping.array, data = temp_df)
+
+# Save the quartiles model 
+  OR = tidy(model, exponentiate = T) %>% 
+    mutate(low95 = exp(log(estimate) - 1.96*std.error), up95 = exp(log(estimate) + 1.96*std.error)) %>% 
+    select(-std.error, -statistic) %>% rename(OR = estimate)
+
+  model_results_quartile_cont[[i]] <- OR
+
+
+
+# Benchmark that this set of model is complete 
+print(i)
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+}
+
+
+# Save the models
+results_quartile_cont_df = list_rbind(model_results_quartile_cont, names_to = "ses") 
+
+# And now export these models.
+results_quartile_cont_df %>% 
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Models/age_interaction_ses_models_2023.10.12.csv")
+
+```
+
+Then Plot the results
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+results_quartile_cont_plotting = results_quartile_cont_df %>% 
+  filter(term %notin% c("(Intercept)", "age_assessment", "Age2", "Age3",
+                        "PSA_Screening", "genotyping.arrayUKBL"))
+
+
+# Create a plot for quartiles continuous
+results_quartile_cont_plotting %>% 
+  ggplot(aes(x = ses, y = OR, ymin = low95, ymax = up95, color = ses)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(x = "SES", y = "Odds Ratio") +
+  ggtitle("Continuous Quartiles SES Odds Ratios with 95% Confidence Intervals") +
+  ylim(0.85, 1.1) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### Individu Metrics Models

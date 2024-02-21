@@ -1,0 +1,1275 @@
+---
+title: Plots_and_Analyses.R
+author: jjudd5
+date: '2023-12-12'
+output: html_notebook
+---
+
+# Introduction:
+
+This file is going to contain the code and plots for the main analyses and figures/tables we've decided to make for the paper (as of 2/2/24). The code is currently being run on R/4.2.2
+
+### Packages:
+
+```{r include = F}
+# Reset environment and set right directory
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# This will need to change if I change my R version
+.libPaths(c("~/R/x86_64-pc-linux-gnu-library/4.2.2",
+            "/scg/apps/software/r/4.2.2/lib",
+            .libPaths()) 
+)
+           
+# Load packages:
+library(tidyverse)
+library(data.table)
+library(readxl)
+library(tidymodels)
+library(corrr)
+library(leaps)
+library(caret)
+library(patchwork)
+library(gridExtra)
+library(meta)
+
+```
+
+## Load the necessary data
+
+This load and edits the necessary data file to do my analysis. This includes the cancer, PRS, and SES data for the 451 variant PRS and the 5 ancestries I have
+
+```{r}
+data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2023.11.22.csv")
+
+# Minor new definition of a function to be used later in this code block
+`%notin%` = Negate(`%in%`)
+
+
+# I also want to make sure to have new cancer variables that I can plug into my models. 
+data_df = data_raw %>% 
+  #First, I want a variable that counts any prostate cancer as case and no cancer at all as the control. 
+  # If no prostate cancer, but other cancer, then that is NA
+  mutate(prostate_case = if_else(prostate == 1, 1, 
+                                 if_else(case == 1, NA, 0)
+                                 )
+         ) %>% 
+  # I also want to include a measure of incident cancer
+  mutate(prostate_incident = if_else(prostate == 1 & prostate_incid_any == 0, NA,
+                                     if_else(prostate_incid_any == 0 & case == 0, 0, 
+                                             if_else(prostate_incid_any == 1, 1, NA))
+                                     )
+         ) %>% 
+  # I also want prevalent cancer
+  mutate(prostate_prevalent = if_else(prostate_incid_any == 1, NA,
+                                      if_else(prostate==0 & prostate_incid_any==0 & case ==0, 0, 
+                                              if_else(prostate==1 & prostate_incid_any==0, 1, NA))
+                                      )
+         ) %>% 
+  # Make all of these factors
+  mutate(prostate_case = as.factor(prostate_case),
+         prostate_incident = as.factor(prostate_incident),
+         prostate_prevalent = as.factor(prostate_prevalent)) %>% 
+  # Remove non-NA's for screening PSA
+  filter(!is.na(PSA_Screening)) %>% 
+  # I want to remove non-UK assessment centers
+  filter(Assessment_Centre %notin% c(11023, 11022, 11003, 11005, 11004)
+  ) %>% 
+  # I also want assessment center and the smoking to be a factor
+  mutate(Assessment_Centre = as.factor(Assessment_Centre),
+         Household_Smoking = as.factor(Household_Smoking)) 
+
+```
+
+## SES & Ancestry Variable Selection:
+
+This is where I define the SES variables that are used throughout the models
+
+```{r}
+# SES variables to loop through
+ses_factors = names(data_df) %>% .[25:33]
+ses_factors
+
+# Pull the European, African, South Asian, and Mixed ancestries that I plan to look at
+ances = data_df %>% pull(Ances) %>% unique() %>% .[-2]
+ances
+
+```
+
+------------------------------------------------------------------------
+
+# Code and Table generation
+
+This next section is going to focus on the analyses/tables/figures/plots that will go into the paper
+
+## Table 1 - Descriptive Statistics
+
+The first figure/table that I want will charactertize my data. THe main information I want from this table will include
+
+-   Mean + SD for all the deprivation
+-   Data for 4 genetics ancestries
+-   Split across cases and controls
+-   Separated on PSA Screening
+
+Create a list variable to save the different data since it'll be hard to format here
+
+```{r}
+# Create a list of variables to save my results
+table1 = list()
+```
+
+### SES Distribution
+
+I first want to characterize the distribution of my cases/controls/prevalence across the different nSES/PRS quartiles.
+
+```{r}
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+
+# Pull the relevant variables that I'm trying to summarize
+split_prev = data_df %>% 
+  select(Ances,
+         contains( c("eid", "prostate_incident")), 
+         PRS,
+         all_of(ses_factors)
+         ) %>% 
+  filter(Ances %in% ances )
+
+# I will now summarize this data to categorize case/controls as well as prevalence at the end
+summ_df =  split_prev %>% 
+  group_by(Ances, prostate_incident) %>% 
+  na.omit() %>% 
+  # Summarize the mean and sd as desired
+  summarize(across(ses_factors, ~ mean(.x, na.rm = TRUE), .names = "{.col}_mean"),
+            PRS_mean = mean(PRS, na.rm = TRUE),
+            across(ses_factors, ~ sd(.x, na.rm = TRUE), .names = "{.col}_sd"),
+            PRS_sd = sd(PRS, na.rm = TRUE),
+            ) %>% 
+  
+  # Pivot longer for clarity 
+  pivot_longer(cols = contains("mean"), names_to = "Var_mean", values_to = "Mean") %>% 
+  pivot_longer(cols = contains("sd"), names_to = "Var_sd", values_to = "SD") %>% 
+  
+  # Organize slightly more for clarity
+  mutate(Var_mean = str_split_i(Var_mean,"_", 1),
+         Var_sd = str_split_i(Var_sd,"_", 1)) %>% 
+  filter(Var_mean == Var_sd) %>% 
+  select(-Var_sd) %>% rename(Index = Var_mean) %>% 
+  
+  # Now I want to pivot the data wider to enable me as a final clarity step
+  pivot_wider(names_from = prostate_incident,
+               names_sep = ".",
+               values_from = c(Mean, SD)) 
+
+# Separately, I want to run a t-test on my PRS and nSES variables to see if there is a difference in means
+diff_ses = split_prev %>% group_by(Ances) %>% 
+  summarize(mean_0 = t.test(PRS ~ prostate_incident)$estimate[1],
+            mean_1 = t.test(PRS ~ prostate_incident)$estimate[2],
+            pval = t.test(PRS ~ prostate_incident)$p.value)
+           
+ 
+diff_ses = split_prev %>% group_by(Ances) %>% 
+  summarize(across(PRS:Townsend_Index,
+                   list(mean = ~ mean(.x, na.rm = T),
+                        sd = ~sd(.x, na.rm = T),
+                        pval = ~t.test(.x ~ prostate_incident)$p.value),
+                   .names = "{col}_{.fn}")
+            )
+
+diff_ses_v2 = split_prev %>% group_by(Ances) %>% 
+  summarize(across(PRS:Townsend_Index,
+                   list(pval = ~t.test(.x ~ prostate_incident)$p.value),
+                   .names = "{col}_{.fn}")
+            )
+
+# # Add the ancestry and save to overarching dataframe
+# summ_df = prev_summary %>% 
+#   mutate(ancestry = j) %>% 
+#   rbind(summ_df, .)
+#   
+# # Save the summary variables
+# table1 = table1 %>% list_assign(nSES_dist = summ_df)
+
+```
+
+### PSA Distribution
+
+I'm also interested in the split of PSA screening for different SES groups for both cases and controls. I may not end up splitting the data by SES in the end, but that can be a later transofrmation
+
+I largely just want the case/controls split for never/ever screened. I have code for quartile never/ever screened as well as screened in controls/cases over ses quartiles in previous iterations. I can redo that for a suppliment, but don't need it here.
+
+```{r}
+
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances){
+
+  # I'm basically going to want a lot of data that takes into account the quartile of SES so I'm going to create lasting variables that keep track of that
+  data_split = data_df %>% filter(Ances == j)
+  
+  # I can now use this to pull the main columns of interest
+  split_psa = data_split %>% 
+    select(contains( c("eid",
+                       "prostate_incident",
+                       "PSA_Screening")) 
+           ) %>% na.omit() %>% 
+    # Now group by my 2 variables and see where they land
+    group_by(prostate_incident, PSA_Screening) %>% 
+    summarize(Count = n()) %>% 
+    # Pivot-wider for understanding sake
+    pivot_wider(names_from = prostate_incident, values_from = Count) %>% 
+    rename(Controls = "0", Cases = "1")
+  
+    # Add the ancestry and save to overarching dataframe
+  summ_df = split_psa %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+  
+  }
+
+
+
+# Now I can save this
+table1 = table1 %>% list_assign(psa_dist = summ_df
+                                )
+```
+
+### Antropometric Distributions
+
+The last few variables I have are the bodily measurements that I have, such as age, bmi, and height. I'm going to pull those statistics as well as run a t-test to see if there is a significant difference between cases and controls
+
+```{r}
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+
+# Pull the relevant variables that I'm trying to summarize
+data_anthro = data_df %>% 
+  select(Ances,
+         contains( c("eid", "prostate_incident")), 
+         age_assessment, BMI, Height,
+         ) %>% 
+  filter(Ances %in% ances )
+
+anthro_descrip = data_anthro %>% na.omit() %>% 
+  group_by(Ances, prostate_incident) %>% 
+  summarize(across(age_assessment:Height,
+                   list(mean = ~ mean(.x, na.rm = T),
+                        sd = ~sd(.x, na.rm = T)),
+                   .names = "{col}_{.fn}")
+  )
+
+anthro_diff = data_anthro %>% na.omit() %>% 
+  group_by(Ances) %>% 
+  summarize(across(age_assessment:Height,
+                   list(pval = ~t.test(.x ~ prostate_incident)$p.value),
+                   .names = "{col}_{.fn}")
+  )
+
+
+# # Add the ancestry and save to overarching dataframe
+# summ_df = prev_summary %>% 
+#   mutate(ancestry = j) %>% 
+#   rbind(summ_df, .)
+#   
+# # Save the summary variables
+# table1 = table1 %>% list_assign(nSES_dist = summ_df)
+
+
+```
+
+## Figure 1 - PRS Decile Plot
+
+I will make my first main figure. It will be a decile plot similar to Fig. 1 of Conti et al. 2021 where I will calculate the OR of the PRS effect between deciles using the 40-60% scores as a reference.
+
+In order to do this, I will assign every one a decile based on PRS score and then run logit models
+
+### Model Generation
+
+```{r}
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+
+  # Create new data frame with PRS deciles and setting 40-60 as the reference
+  temp_df = data_split %>% drop_na(PRS) %>% 
+    mutate(PRS_decile = ntile(PRS, 10) 
+           ) %>% 
+    # Group middle deciles
+    mutate(PRS_decile = if_else(PRS_decile %in% c(5:6),
+                                 0, PRS_decile)) %>% 
+    # Factor and set levels
+    mutate(PRS_decile = factor(PRS_decile, levels = c(0:4,7:10)))
+  
+  
+  # Set the model
+  formula = paste0("prostate_incident ~ PRS_decile", 
+                   " + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
+                   ) %>% as.formula()
+      
+  model = logistic_reg() %>% fit(formula, data = temp_df)
+  
+      
+  # Run the model
+  OR = tidy(model, exponentiate = T) %>% 
+  rename(OR = estimate) %>% 
+  mutate(low95 = exp(log(OR) - 1.96*std.error), 
+  up95 = exp(log(OR) + 1.96*std.error)) %>% 
+  select(-std.error, -statistic) 
+  
+  # Format the results by pulling relevant data and adding the reference
+  results_df = OR[c(2:9),] %>% 
+    rbind(tibble(term = "PRS_decile6",
+                 OR = 1,
+                 p.value = 0,
+                 low95 = 1,
+                 up95 = 1))
+  
+  # Then add to summary data_frame
+  summ_df = results_df %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+
+}
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure1_models_2024.1.18.csv")
+
+```
+
+### Plot generation
+
+Now use the models to actually create Figure 1.
+
+```{r}
+# Edit this df to better plot
+`%notin%` = Negate(`%in%`) # Quick helper function
+
+plotting_df = summ_df %>% 
+  mutate(term = factor(term, levels = str_c("PRS_decile",c(1:4,6:10)))
+  ) 
+  
+# Create a plot
+p1 = plotting_df %>% 
+  ggplot(aes(x = term, y = OR, ymin = low95, ymax = up95, color = ancestry)) +
+  geom_pointrange(show.legend = T, position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+  scale_x_discrete(labels = c("PRS_decile1" = "0-10%", 
+                              "PRS_decile2" ="10-20%", 
+                              "PRS_decile3" ="20-30%", 
+                              "PRS_decile4" ="30-40%",
+                              "PRS_decile6" = "40-60%",
+                              "PRS_decile7" = "60-70%", 
+                              "PRS_decile8" = "70-80%", 
+                              "PRS_decile9" = "80-90%", 
+                              "PRS_decile10" ="90-100%")) +
+  ylim(0,10) +
+  labs(y = "Odds Ratio (95% CI)", x = "PRS Deciles") +
+  ggtitle(paste0("Prostate Cancer ~ PRS")
+          ) +
+  theme_minimal()
+
+# Create a second plot that facet's on ancestry as a wrap
+p2 = plotting_df %>% 
+  ggplot(aes(x = term, y = OR, ymin = low95, ymax = up95)) +
+  facet_wrap(vars(ancestry)) +
+  geom_pointrange(show.legend = T, position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+  scale_x_discrete(labels = c("PRS_decile1" = "0-10%", 
+                              "PRS_decile2" ="10-20%", 
+                              "PRS_decile3" ="20-30%", 
+                              "PRS_decile4" ="30-40%",
+                              "PRS_decile6" = "40-60%",
+                              "PRS_decile7" = "60-70%", 
+                              "PRS_decile8" = "70-80%", 
+                              "PRS_decile9" = "80-90%", 
+                              "PRS_decile10" ="90-100%")) +
+  ylim(0,10) +
+  labs(y = "Odds Ratio (95% CI)", x = "PRS Deciles") +
+  ggtitle(paste0("Prostate Cancer ~ PRS")
+          ) +
+  theme_minimal()
+
+# Create a second plot that facet's on ancestry as a grid
+p3 = plotting_df %>% 
+  ggplot(aes(x = term, y = OR, ymin = low95, ymax = up95)) +
+  facet_grid(rows = vars(ancestry)) +
+  geom_pointrange(show.legend = T, position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+  scale_x_discrete(labels = c("PRS_decile1" = "0-10%", 
+                              "PRS_decile2" ="10-20%", 
+                              "PRS_decile3" ="20-30%", 
+                              "PRS_decile4" ="30-40%",
+                              "PRS_decile6" = "40-60%",
+                              "PRS_decile7" = "60-70%", 
+                              "PRS_decile8" = "70-80%", 
+                              "PRS_decile9" = "80-90%", 
+                              "PRS_decile10" ="90-100%")) +
+  ylim(0,10) +
+  labs(y = "Odds Ratio (95% CI)", x = "PRS Deciles") +
+  ggtitle(paste0("Prostate Cancer ~ PRS")
+          ) +
+  theme_minimal()
+
+
+#---
+# Create a dataset without the infinite CIs
+plotting_df2 = plotting_df %>% filter(low95 != 0)
+
+# And then make the plots that I previously made
+# Create a plot that colors ancestry
+p4 = plotting_df2 %>%  
+  ggplot(aes(x = term, y = OR, ymin = low95, ymax = up95, color = ancestry)) +
+  geom_pointrange(show.legend = T, position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+  scale_x_discrete(labels = c("PRS_decile1" = "0-10%", 
+                              "PRS_decile2" ="10-20%", 
+                              "PRS_decile3" ="20-30%", 
+                              "PRS_decile4" ="30-40%",
+                              "PRS_decile6" = "40-60%",
+                              "PRS_decile7" = "60-70%", 
+                              "PRS_decile8" = "70-80%", 
+                              "PRS_decile9" = "80-90%", 
+                              "PRS_decile10" ="90-100%")) +
+  ylim(0,10) +
+  labs(y = "Odds Ratio (95% CI)", x = "PRS Deciles") +
+  ggtitle(paste0("Prostate Cancer ~ PRS")
+          ) +
+  theme_minimal()
+
+# Create a second plot that facet's on ancestry as a wrap
+p5 = plotting_df2 %>% filter(ancestry %in% c("eur","afr")) %>% 
+  ggplot(aes(x = term, y = OR, ymin = low95, ymax = up95, color = ancestry)) +
+  facet_wrap(vars(ancestry)) +
+  geom_pointrange(show.legend = F, position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+  scale_x_discrete(labels = c("PRS_decile1" = "0-10%", 
+                              "PRS_decile2" ="10-20%", 
+                              "PRS_decile3" ="20-30%", 
+                              "PRS_decile4" ="30-40%",
+                              "PRS_decile6" = "40-60%",
+                              "PRS_decile7" = "60-70%", 
+                              "PRS_decile8" = "70-80%", 
+                              "PRS_decile9" = "80-90%", 
+                              "PRS_decile10" ="90-100%")) +
+  #ylim(0,10) +
+  labs(y = "Odds Ratio (95% CI)", x = "PRS Deciles") +
+  ggtitle(paste0("Prostate Cancer ~ PRS")
+          ) +
+  theme_minimal()
+
+# Create a second plot that facet's on ancestry as a grid
+p6 = plotting_df2 %>% 
+  ggplot(aes(x = term, y = OR, ymin = low95, ymax = up95, color = ancestry)) +
+  facet_grid(rows = vars(ancestry)) +
+  geom_pointrange(show.legend = F, position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+  scale_x_discrete(labels = c("PRS_decile1" = "0-10%", 
+                              "PRS_decile2" ="10-20%", 
+                              "PRS_decile3" ="20-30%", 
+                              "PRS_decile4" ="30-40%",
+                              "PRS_decile6" = "40-60%",
+                              "PRS_decile7" = "60-70%", 
+                              "PRS_decile8" = "70-80%", 
+                              "PRS_decile9" = "80-90%", 
+                              "PRS_decile10" ="90-100%")) +
+  ylim(0,10) +
+  labs(y = "Odds Ratio (95% CI)", x = "PRS Deciles") +
+  ggtitle(paste0("Prostate Cancer ~ PRS")
+          ) +
+  theme_minimal()
+
+
+# -----
+# Code to make individual ancestry plots
+p_ancestry = plotting_df %>% filter(low95 != 0, ancestry == "eur") %>% 
+  ggplot(aes(x = term, y = OR, ymin = low95, ymax = up95)) +
+  geom_pointrange(show.legend = F, position = position_dodge(width = 0.5),
+                  colour = "#00abff") +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "grey") +
+  scale_x_discrete(labels = c("PRS_decile1" = "0-10%", 
+                              "PRS_decile2" ="10-20%", 
+                              "PRS_decile3" ="20-30%", 
+                              "PRS_decile4" ="30-40%",
+                              "PRS_decile6" = "40-60%",
+                              "PRS_decile7" = "60-70%", 
+                              "PRS_decile8" = "70-80%", 
+                              "PRS_decile9" = "80-90%", 
+                              "PRS_decile10" ="90-100%")) +
+  labs(y = "Odds Ratio (95% CI)", x = "PRS Deciles") +
+  ggtitle(paste0("Prostate Cancer ~ PRS")
+          ) +
+  theme_minimal()
+
+
+```
+
+## Figure 2 - nSES Forest Plot
+
+The next major plot I want to make is the forst plot of my main SES effects. For this, I will first calculate the effect of the standardized nSES variables and then use some code from online to make a plot
+
+### Model Generation
+
+```{r}
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+  model_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    
+    # Create symbol for coding reason
+    i = sym(i)
+    
+    # Calculate the standardized data for the Deprivation index of interest
+      temp_df = data_split %>% drop_na(!!i) %>% 
+        mutate(Deprivation_z = scale(!!i)[,1]
+               )
+    
+    # Run models of interest
+      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment + PSA_Screening"
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = temp_df)
+    
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) 
+    
+      # Pull specific results before saving
+      model_results[[i]] <- OR[2,]
+      
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+    # Remove the term variable (since it's redundant) and then add to summary data_frame
+    summ_df = results_df %>% 
+      select(-term) %>% 
+      mutate(ancestry = j) %>% 
+      rbind(summ_df, .) 
+
+}
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure2_models_2024.1.19.csv")
+
+
+# I also want to try creating a table of these models so I'm going to do some extra formatting and then export that table
+table2 = summ_df %>% 
+  # Round all the numbers to 3 significant digits for simplicity
+  mutate(across(.cols = OR:up95,
+                .fns = ~signif(.x, digits = 3),
+                .names = "{col}"
+                )) %>% 
+  
+  # First off is combining the low95 and up95 into a single CI column
+  mutate(CI = str_c("(", low95, " - ", up95, ")")) %>% 
+  
+  # Order the columns
+  select(ses, ancestry, OR, CI, p.value) %>% 
+  
+  # And then pivot wier to get all the ancestries as columns per index
+  pivot_wider(names_from = ancestry, 
+              values_from = c(OR, CI, p.value),
+              names_vary = "slowest",
+              names_glue = "{ancestry}_{.value}")
+
+# And now export this table
+table2 %>% 
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table2_models_2024.1.19.csv")
+
+```
+
+### Plot Generation
+
+Now use the only code I found online to make the plots
+
+```{r}
+
+# let's loop through the ancestries, make the plot, and then assign the variable
+
+for (i in 1:4){
+  
+  # Define the plot to save and the proper ancestry
+  saving_plot = paste0("plot",i)
+  curr_ancestry = ances[i]
+  
+  
+  temp_df = summ_df %>% filter(ancestry == curr_ancestry) 
+  
+  # Create extra dataframe that will help with plotting
+  plot_df = temp_df %>% 
+    # Round ORs to 2 decimals places
+    mutate(across(c(OR, low95, up95),
+           ~ str_pad(round(.x, 2),
+                     width = 4,
+                     pad = "0",
+                     side = "right")
+           ),
+           # Add a label for the ORs w/ CIs
+           OR_lab = paste0(OR, " (", low95, "-", up95, ")")
+    ) %>% 
+    # Round p_values
+    mutate(p.value = case_when(p.value < .001 ~ "<0.001", round(p.value, 2) == .05 ~ as.character(round(p.value,3)),
+                               p.value < .01 ~ str_pad( # if less than .01, go one more decimal place 
+                                 as.character(round(p.value, 3)), width = 4, pad = "0", side = "right"),
+                               TRUE ~ str_pad( # otherwise just round to 2 decimal places and pad string so that .2 reads as 0.20
+                                 as.character(round(p.value, 2)), width = 4, pad = "0", side = "right")
+                               )
+    ) %>% 
+    # Add a row of data with the names
+    bind_rows(data.frame(ses = "Model",
+                         OR_lab = "Odds Ratio (95% CI)",
+                         low95 = "",
+                         up95 = "",
+                         p.value = "p-value"
+                         )
+    ) %>% mutate(ses = fct_rev(fct_relevel(ses, "Model")))
+  
+  
+  # --- --- --- --- --- ---
+  # Build middle of volcano plot
+  p_mid = temp_df %>%
+    ggplot(aes(y = fct_rev(ses))) +
+    theme_classic() +
+    
+    # And then adding the data
+    geom_pointrange(aes(x = OR, xmin = low95, xmax = up95), 
+                    show.legend = F,
+                    shape = 15) +
+    
+    # Now adding a x-intercept and axis titles
+    geom_vline(xintercept = 1, linetype = "dashed") +
+    labs(x = "Odds Ratio", y = "") +
+    
+    # Now add space
+    coord_cartesian(ylim = c(1,10), xlim = c(0.60,2)) +
+    
+    # Add note about the effect
+    annotate("text", x = 0.70, y = 10, label = "Deprivation \nProtective") +
+    annotate("text", x = 1.4, y = 10, label = "Deprivation \nHarmful") +
+    
+    # Remove y-axis to add later on
+    theme(axis.line.y = element_blank(),
+        axis.ticks.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y= element_blank())
+  
+  
+  # --- --- --- --- --- ---
+  # Build annotation plot for the left
+  p_left = plot_df %>% 
+    ggplot(aes(y = ses)) +
+    
+    # Include a title
+    labs(title = curr_ancestry) +
+    
+    # Add text
+    geom_text(aes(x = 0, label = ses), hjust = 0, fontface = "bold") +
+    
+    # Shift text plus add ORs text
+    geom_text(
+      aes(x = 1, label = OR_lab),
+      hjust = 0,
+      fontface = ifelse(plot_df$OR_lab == "Odds Ratio (95% CI)", "bold", "plain")
+    ) +
+  
+    # Remove background and size up
+    theme_void() +
+    coord_cartesian(xlim = c(0,4))
+  
+  
+  # --- --- --- --- --- --- ---
+  # Build p-value plot on the right
+  p_right = plot_df %>% 
+    ggplot() +
+    geom_text(aes(x = 0, y = ses, label = p.value),
+              hjust = 0,
+              fontface = ifelse(plot_df$p.value == "p-value", "bold", "plain")
+              ) +
+    theme_void() 
+  
+  
+  # --- --- --- --- --- ---
+  # Merge the plots
+  top = 0
+  bottom = 30
+  left1 = 0
+  right1 = left1 + 30
+  left2 = right1 + 1
+  right2 = left2 + 5
+  left3 = right2
+  right3 = left3 + 3 
+  
+  
+  layout <- c(
+    area(t = top, l = 0, b = bottom, r = 7), 
+    area(t = top, l = 5, b = bottom, r = 9),
+    area(t = top, l = 9, b = bottom, r = 11)
+    )
+  
+  p = p_left + p_mid + p_right + plot_layout(design = layout)
+
+  # Save plot
+  assign(x = eval(saving_plot),
+         value = p)
+  
+  }
+
+
+# --- --- --- ---
+# Now combine the plots
+combined_plot <- grid.arrange(plot1, plot2, plot3, plot4, ncol = 2)
+  
+```
+
+## Figure 3 - Disparate PSA results
+
+The 3rd figure will be a forest plot that will show the different PSA results when I separate on PSA screening
+
+This will solely be for European ancestry due to the large sample size
+
+### Primary code
+
+After running this code, I'm getting different results than th previous analysis I ran for this. I will keep this code since it is likely what I want in the end, but I'm going to code the original data later in this segment
+
+#### Model Generation
+
+Calculate the ORs for the different stratified PSA status
+
+```{r}
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to calculate the p-value for the difference in the models so I need to save the estimate and SE
+estimate_df = tibble()
+
+
+# I also want to loop between the PSA status
+for (j in 0:1){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == "eur",
+                                  PSA_Screening == j)
+  model_results = list()
+  estimate_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    
+    # Create symbol for coding reason
+    i = sym(i)
+    
+    # Calculate the standardized data for the Deprivation index of interest
+      temp_df = data_split %>% drop_na(!!i) %>% 
+        mutate(Deprivation_z = scale(!!i)[,1]
+               )
+    
+    # Run models of interest
+      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment"
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = temp_df)
+    
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) 
+    
+      # Pull specific results before saving
+      model_results[[i]] <- OR[2,]
+      
+      # Pull estimates befores saving
+      estimate_results[[i]] = tidy(model, exponentiate = F) %>% 
+        select(term, estimate, std.error) %>% .[2,]
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+  # Remove the term variable (since it's redundant) and then add to summary data_frame
+  summ_df = results_df %>% 
+    select(-term) %>% 
+    mutate(PSA_Screening = factor(j, levels = c(0,1))) %>% 
+    rbind(summ_df, .) 
+
+  
+  # Perform a similar process for the estimates where I collect them and format them
+  estimate_df = list_rbind(estimate_results, names_to = "ses") %>% 
+    select(-term) %>% 
+    mutate(PSA_Screening = factor(j, levels = c(0,1))) %>% 
+    rbind(estimate_df,.)
+  
+}
+
+# Along with the models, I want to see if there is a formal difference in the ln(OR)'s per deprivation index
+difference_df = tibble()
+for (i in ses_factors){
+  
+  # Pull the index specific log odds and se's
+  z_df = estimate_df %>% filter(ses == i)
+  ln_odds = z_df %>% pull(estimate) 
+  se_ln_odds = z_df %>% pull(std.error)
+  
+  # Calc the z-score and pvalue
+  z_value = (ln_odds[1] - ln_odds[2]) / sqrt(se_ln_odds[1]^2 + se_ln_odds[2]^2)
+  p_val = abs(z_value) %>% pnorm(q = ., lower.tail=FALSE) %>% '*'(2)
+  
+  # Add to final table
+  z_df = z_df %>% mutate(p.val = p_val) %>% 
+    select(-c(estimate, std.error, PSA_Screening)) %>% .[1,]
+  difference_df = rbind(difference_df, z_df)
+  
+}
+
+# Add on these p-values to the original table 
+summ_df = left_join(summ_df, difference_df) %>% 
+  rename(diff_p.val = p.val) %>% 
+  mutate(diff_p.val = round(diff_p.val,3))
+
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure3_models_2024.2.6.csv")
+
+
+```
+
+#### Plot Generation
+
+```{r}
+
+# Build middle of volcano plot
+p = summ_df %>%
+  ggplot(aes(y = fct_rev(ses))) +
+  theme_classic() +
+  theme(legend.position="top") +
+  
+  # And then adding the data
+  geom_pointrange(aes(x = OR, xmin = low95, xmax = up95, color = PSA_Screening), 
+                  show.legend = T,
+                  shape = 15,
+                  position = position_dodge(width = 1)) + 
+  geom_text(aes(x = 1.09, y = ses, label = diff_p.val),
+            hjust = 0) +
+  
+  # Now adding a x-intercept and axis titles
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  labs(x = "Odds Ratio", y = "") +
+  
+  # Now add space
+  coord_cartesian(ylim = c(1,10), xlim = c(0.85, 1.1)) +
+  
+  # Add note about the effect
+  annotate("text", x = 0.95, y = 10, label = "Deprivation \nProtective") +
+  annotate("text", x = 1.05, y = 10, label = "Deprivation \nHarmful")  +
+  annotate("text", x = 1.095, y = 10, label = "P-value")
+
+# Build plot for right side with p-values
+p_right = summ_df %>% mutate(diff_p.val = round(diff_p.val,3)) %>% 
+  ggplot() +
+  geom_text(aes(x = 0, y = ses, label = diff_p.val),
+            hjust = 0
+            )  
+
+# --- --- --- ---
+# Combine these variables
+layout <- c(
+    area(t = 0, l = 0, b = 0, r = 7), 
+    area(t = 0, l = 5, b = 0, r = 9)
+    )
+  
+p_combined = p + p_right + plot_layout(design = layout)
+
+
+# Now print
+print(p)
+print(p_right)
+print(p_combined)
+
+```
+
+### Secondary Code
+
+I am getting different results than when I originally ran this analysis. I am going to regenerate that code and see if I can recreate those results and understand what caused them
+
+#### Model Generation
+
+```{r}
+
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop between the PSA status
+for (j in 0:1){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == "eur",
+                                  PSA_Screening == j)
+  model_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    
+    # Create symbol for coding reason
+    i = sym(i)
+    
+    # Calculate the standardized data for the Deprivation index of interest
+      temp_df = data_split %>% drop_na(!!i) %>% 
+        mutate(Deprivation_z = scale(!!i)[,1]
+               )
+    
+    # Run models of interest
+      formula = paste0("prostate_case ~ Deprivation_z + age_assessment + genotyping.array"
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = temp_df)
+    
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) 
+    
+      # Pull specific results before saving
+      model_results[[i]] <- OR[2,]
+      
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+  # Remove the term variable (since it's redundant) and then add to summary data_frame
+  summ_df = results_df %>% 
+    select(-term) %>% 
+    mutate(PSA_Screening = factor(j, levels = c(0,1))) %>% 
+    rbind(summ_df, .) 
+
+}
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure3_models_2023.12.28_debug.csv")
+```
+
+#### Plot Generation
+
+```{r}
+
+# Build middle of volcano plot
+p = summ_df %>%
+  ggplot(aes(y = fct_rev(ses))) +
+  theme_classic() +
+  
+  # And then adding the data
+  geom_pointrange(aes(x = OR, xmin = low95, xmax = up95, color = PSA_Screening), 
+                  show.legend = T,
+                  shape = 15,
+                  position = position_dodge(width = 1)) +
+  
+  # Now adding a x-intercept and axis titles
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  labs(x = "Odds Ratio", y = "") +
+  
+  # Now add space
+  coord_cartesian(ylim = c(1,10), xlim = c(0.8, 1.2)) +
+ 
+  # Add note about the effect
+  annotate("text", x = 0.95, y = 10, label = "Deprivation \nProtective") +
+  annotate("text", x = 1.05, y = 10, label = "Deprivation \nHarmful") 
+
+
+
+# --- --- --- ---
+# Now print
+print(p)
+
+```
+
+## Figure 4 - PRS/nSES stratification
+
+The goal of the lsat plot is to see if the PRS effect is modified by nSES strata. I have previously also stratified on PRS, but I really care about nSES stratification to see if genetic risk is modified by nSES.
+
+I'm not sure how I will plot it, but I know I need to generate the ORs for PRS risk for different nSES strata and also stratify on PSA screening status
+
+This will also be European only due to sample size
+
+### Model Generation
+
+The models will be the PrCa \~ PRS model, but I will model PRS continuously on standardized scores and stratify on quartiles
+
+```{r}
+# Remove non-relevant variables
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+
+# Create some dataframes to save the results
+summ_df = tibble()
+
+# I also want to loop through this per deprivation and strata
+for (i in ses_factors){
+  
+  # Print deprivation index to benchmark
+  print(i)
+  
+  # Create symbol for coding reason
+  i = sym(i)
+    
+  # Calculate quartiles for deprivation of interest (also only pull EUR)
+  temp_df = data_df %>% filter(Ances == "eur") %>% 
+    drop_na(!!i) %>% mutate(Deprivation_Quartiles = ntile(!!i, 4)
+                            )
+  # Have place to save models
+  model_results = list()
+  
+  # Loop through the deprivation quartiles
+  for (j in 1:4){
+  
+    # Stratify to only data in the quartile
+    model_data = temp_df %>% filter(Deprivation_Quartiles == j)
+    
+    # Set the model
+    formula = paste0("prostate_incident ~ PRS_z + age_assessment + PSA_Screening", 
+                     str_flatten(str_c("+ PC",1:10))
+                     ) %>% as.formula()
+      
+    model = logistic_reg() %>% fit(formula, data = model_data)
+    
+      
+    # Tidy the model results
+    OR = tidy(model, exponentiate = T) %>% 
+    rename(PRS_OR = estimate) %>% 
+    mutate(low95 = exp(log(PRS_OR) - 1.96*std.error), 
+    up95 = exp(log(PRS_OR) + 1.96*std.error)) %>% 
+    select(-std.error, -statistic) 
+    
+    # Format the results by pulling relevant data and adding the reference
+    model_results[[j]] <- OR[2,]
+    
+    # Benchmark that this set of model is complete 
+    print(j)
+    
+  }
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "quartile") 
+  
+  # I also want to run a heterogeneity cochran's q-test to see if any of the effects are different
+  meta_test = metagen(TE = log(PRS_OR), 
+                      lower = log(low95), upper = log(up95),
+                      pval = rep(0.05,4),
+                      studlab = 1:4,
+                      data = results_df)
+  results_df = results_df %>% 
+    mutate(het_p.val = round(meta_test$pval.Q,
+                             3)
+           )
+  
+  
+  # Remove the term variable (since it's redundant) and then add to summary data_frame
+  summ_df = results_df %>% 
+    select(-term) %>% 
+    mutate(ses = as.character(i)
+           ) %>% 
+    rbind(summ_df, .) %>% 
+    select(ses, !ses)
+  
+}
+  
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure4_models_2024.02.07.csv")
+
+
+# I also want to try creating a table of these models so I'm going to do some extra formatting and then export that table
+table4 = summ_df %>% 
+  # Round all the numbers to 3 significant digits for simplicity
+  mutate(across(.cols = PRS_OR:het_p.val,
+                .fns = ~signif(.x, digits = 3),
+                .names = "{col}"
+                )) %>% 
+  
+  # First off is combining the low95 and up95 into a single CI column
+  mutate(CI = str_c("(", low95, " - ", up95, ")")) %>% 
+  
+  # Order the columns
+  select(ses:p.value, het_p.val:CI) %>% 
+  
+  # And then pivot wier to get all the ancestries as columns per index
+  pivot_wider(names_from = quartile, 
+              values_from = c(PRS_OR, CI, p.value),
+              names_vary = "slowest",
+              names_glue = "{quartile}_{.value}") %>% 
+  
+  # Reorder columns for simplicity
+  select(!het_p.val, het_p.val)
+
+# And now export this table
+table4 %>% 
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table4_models_2024.2.7.csv")
+
+```
+
+
+
+### Plot Generation
+
+I actually don't know how i will plot this so this will remain blank. Well kinda. Let me just plot like the others and see what happens
+
+```{r}
+# I also want to add a row of the base PRS OR from non-stratified data
+base_effect = data.frame(ses = "Base",
+                         quartile = "PRS",
+                         OR = 2.91,
+                         p.value = 0,
+                         low95 = 2.85,
+                         up95 = 2.95,
+                         Index = "Base")
+                         
+
+plot_df = summ_df %>% mutate(ses_quartile = paste0(ses, "-", quartile),
+                             ses = paste0(ses, "-"))   # %>% rbind(base_effect)
+
+# Create a plot
+plot_df %>% 
+  # Define the space and plot area
+  ggplot(aes(y = fct_rev(ses_quartile))) + 
+  theme_minimal() +
+  theme(legend.position="top") + 
+  scale_y_discrete(limits=rev) +
+  
+  # Place the ORs and vline
+  geom_pointrange(aes(x = PRS_OR, y = ses_quartile, xmin = low95, xmax = up95, colour = ses),
+                  show.legend = F, 
+                  position = position_dodge(width = 1)) +
+  geom_vline(xintercept = 2.23, linetype = "dashed", color = "red") +
+  
+  # Add the space for the p-values
+  annotate("text", x = 2.55, y = 45, label = "P-value") +
+  geom_text(aes(x = 2.55, y = ses, label = het_p.val),
+            nudge_y = -2.5) +
+  
+  # Final labels
+  labs(x = "OR", y = "PRS - nSES Quartile") +
+  ggtitle("PRS OR Stratified By nSES Quartile")
+  
+
+# Make a seocond plot with fewer indices
+plot_df2 = plot_df %>% filter(grepl('IMD|Townsend', ses))
+
+# Second plot
+plot_df2 %>% 
+  # Define the space and plot area
+  ggplot(aes(y = fct_rev(ses_quartile))) + 
+  theme_minimal() +
+  theme(legend.position="top") + 
+  scale_y_discrete(limits=rev) +
+  
+  # Place the ORs and vline
+  geom_pointrange(aes(x = PRS_OR, y = ses_quartile, xmin = low95, xmax = up95, colour = ses),
+                  show.legend = F, 
+                  position = position_dodge(width = 1)) +
+  geom_vline(xintercept = 2.23, linetype = "dashed", color = "red") +
+  
+  # Add the space for the p-values
+  annotate("text", x = 2.55, y = 10, label = "P-value") +
+  geom_text(aes(x = 2.55, y = ses, label = het_p.val),
+            nudge_y = -2.5) +
+  
+  # Final labels
+  labs(x = "OR", y = "PRS - nSES Quartile") +
+  ggtitle("PRS OR Stratified By nSES Quartile")
+
+```
