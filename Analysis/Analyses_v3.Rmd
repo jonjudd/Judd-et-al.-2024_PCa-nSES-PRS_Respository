@@ -9,10 +9,11 @@ output: html_notebook
 
 This file is going to contain the code and plots for the main analyses and figures/tables we've decided to make for the paper (as of 2/2/24). The code is currently being run on R/4.2.2
 
-### Packages:
+## Packages:
 
 ```{r include = F}
 # Reset environment and set right directory
+rm(list = ls())
 keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
                    "table1") 
 rm(list = ls()[!(ls() %in% keep_variables)])
@@ -81,6 +82,55 @@ data_df = data_raw %>%
   mutate(Assessment_Centre = as.factor(Assessment_Centre)) 
 
 ```
+
+### Load Secondary Disease
+
+I also wanted to run this analyses to see if the deprivation association holds for other diseases. The first disease I will check is Colorectal Cancer. First thing I need to do is load the dataset similar to the prostate cancer dataset
+
+I then need to run the Figure 2(Disease~nSES) analysis
+
+```{r}
+data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_crc_2024.02.21.csv")
+
+# Minor new definition of a function to be used later in this code block
+`%notin%` = Negate(`%in%`)
+
+
+# I also want to make sure to have new cancer variables that I can plug into my models. 
+data_df = data_raw %>% 
+  #First, I want a variable that counts any colorectal cancer as case and no cancer at all as the control. 
+  # If no colorectal cancer, but other cancer, then that is NA
+  mutate(colorectal_case = if_else(colorectal == 1, 1, 
+                                 if_else(case == 1, NA, 0)
+                                 )
+         ) %>% 
+  # I also want to include a measure of incident cancer
+  mutate(colorectal_incident = if_else(colorectal == 1 & colorectal_incid_any == 0, NA,
+                                     if_else(colorectal_incid_any == 0 & case == 0, 0, 
+                                             if_else(colorectal_incid_any == 1, 1, NA))
+                                     )
+         ) %>% 
+  # I also want prevalent cancer
+  mutate(colorectal_prevalent = if_else(colorectal_incid_any == 1, NA,
+                                      if_else(colorectal==0 & colorectal_incid_any==0 & case ==0, 0, 
+                                              if_else(colorectal==1 & colorectal_incid_any==0, 1, NA))
+                                      )
+         ) %>% 
+  # Make all of these factors
+  mutate(colorectal_case = as.factor(colorectal_case),
+         colorectal_incident = as.factor(colorectal_incident),
+         colorectal_prevalent = as.factor(colorectal_prevalent)) %>% 
+  # Remove non-NA's for screening PSA
+  filter(!is.na(PSA_Screening)) %>% 
+  # I want to remove non-UK assessment centers
+  filter(Assessment_Centre %notin% c(11023, 11022, 11003, 11005, 11004)
+  ) %>% 
+  # I also want assessment center and the smoking to be a factor
+  mutate(Assessment_Centre = as.factor(Assessment_Centre)) 
+
+```
+
+
 
 ## SES & Ancestry Variable Selection:
 
@@ -575,7 +625,7 @@ for (j in ances){
                )
     
     # Run models of interest
-      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment + PSA_Screening"
+      formula = paste0("colorectal_incident ~ Deprivation_z + age_assessment + PSA_Screening"
                        ) %>% as.formula()
       
       model = logistic_reg() %>% fit(formula, data = temp_df)
@@ -598,25 +648,25 @@ for (j in ances){
   # Save the models
   results_df = list_rbind(model_results, names_to = "ses") 
   
-    # Remove the term variable (since it's redundant) and then add to summary data_frame
-    summ_df = results_df %>% 
-      select(-term) %>% 
-      mutate(ancestry = j) %>% 
-      rbind(summ_df, .) 
+  # Remove the term variable (since it's redundant) and then add to summary data_frame
+  summ_df = results_df %>% 
+    select(-term) %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .) 
 
 }
   
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure2_models_2024.02.22.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/CRC/Figure2_models_2024.02.22.csv")
 
 
 # I also want to try creating a table of these models so I'm going to do some extra formatting and then export that table
 table2 = summ_df %>% 
   # Round all the numbers to 3 significant digits for simplicity
   mutate(across(.cols = OR:up95,
-                .fns = ~signif(.x, digits = 3),
+                .fns = ~signif(.x, digits = 2),
                 .names = "{col}"
                 )) %>% 
   
@@ -634,7 +684,7 @@ table2 = summ_df %>%
 
 # And now export this table
 table2 %>% 
-  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table2_models_2024.02.22.csv")
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/CRC/Table2_models_2024.02.22.csv")
 
 ```
 
@@ -701,11 +751,11 @@ for (i in 1:4){
     labs(x = "Odds Ratio", y = "") +
     
     # Now add space
-    coord_cartesian(ylim = c(1,10), xlim = c(0.60,2)) +
+    coord_cartesian(ylim = c(1,10)) +#, xlim = c(0.60,2)) +
     
     # Add note about the effect
-    annotate("text", x = 0.70, y = 10, label = "Deprivation \nProtective") +
-    annotate("text", x = 1.4, y = 10, label = "Deprivation \nHarmful") +
+    annotate("text", x = 0.95, y = 10, label = "-") +
+    annotate("text", x = 1.05, y = 10, label = "-") +
     
     # Remove y-axis to add later on
     theme(axis.line.y = element_blank(),
