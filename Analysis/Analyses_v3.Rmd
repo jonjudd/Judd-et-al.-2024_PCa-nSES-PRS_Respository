@@ -79,7 +79,10 @@ data_df = data_raw %>%
   filter(Assessment_Centre %notin% c(11023, 11022, 11003, 11005, 11004)
   ) %>% 
   # I also want assessment center and the smoking to be a factor
-  mutate(Assessment_Centre = as.factor(Assessment_Centre)) 
+  mutate(Assessment_Centre = as.factor(Assessment_Centre)) %>% 
+  
+  # And rename Townsend_Index to just Townsend for clarity
+  rename(Townsend = Townsend_Index)
 
 ```
 
@@ -176,7 +179,7 @@ diff_ses = split_prev %>% group_by(Ances) %>%
            
  
 diff_ses = split_prev %>% group_by(Ances) %>% 
-  summarize(across(PRS:Townsend_Index,
+  summarize(across(PRS:Townsend,
                    list(mean = ~ mean(.x, na.rm = T),
                         sd = ~sd(.x, na.rm = T),
                         pval = ~t.test(.x ~ prostate_incident)$p.value),
@@ -184,7 +187,7 @@ diff_ses = split_prev %>% group_by(Ances) %>%
             )
 
 diff_ses_v2 = split_prev %>% group_by(Ances) %>% 
-  summarize(across(PRS:Townsend_Index,
+  summarize(across(PRS:Townsend,
                    list(pval = ~t.test(.x ~ prostate_incident)$p.value),
                    .names = "{col}_{.fn}")
             )
@@ -762,13 +765,21 @@ for (i in 1:4){
   right3 = left3 + 3 
   
   
+  # layout <- c(
+  #   area(t = top, l = 0, b = bottom, r = 7), 
+  #   area(t = top, l = 5, b = bottom, r = 9),
+  #   area(t = top, l = 9, b = bottom, r = 11)
+  #   )
+  # 
+  # p = p_left + p_mid + p_right + plot_layout(design = layout)
+  
+  # I want to make a rendition of this plot w/o the p-values
   layout <- c(
     area(t = top, l = 0, b = bottom, r = 7), 
-    area(t = top, l = 5, b = bottom, r = 9),
-    area(t = top, l = 9, b = bottom, r = 11)
+    area(t = top, l = 5, b = bottom, r = 9)
     )
   
-  p = p_left + p_mid + p_right + plot_layout(design = layout)
+  p = p_left + p_mid + plot_layout(design = layout)
 
   # Save plot
   assign(x = eval(saving_plot),
@@ -1342,6 +1353,33 @@ for (j in ances){
 summ_df %>%
   select(ancestry, !ancestry) %>% 
   write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp1_models_2024.03.21.csv")
+
+```
+
+Now generate a simple forest plot of this data
+```{r}
+summ_df %>% 
+  
+  # Define the space and plot area
+  ggplot() + 
+  theme_minimal()+
+  # Place the ORs and vline
+  geom_pointrange(aes(x = OR, y = ancestry, xmin = low95, xmax = up95, colour = ancestry),
+                  show.legend = F, 
+                  position = position_dodge(width = 1)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  
+  # Final labels
+  labs(x = "OR", y = "Genetic Ancestry Group") +
+  scale_y_discrete(labels = c("mix" = "Mixed",
+                              "sas" = "South Asian",
+                              "afr" = "African",
+                              "eur" = "European"),
+                   limits = c("sas","mix","afr","eur")
+                   ) +
+  ggtitle("Prostate Cancer PRS Risk") +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 16))
 
 ```
 
