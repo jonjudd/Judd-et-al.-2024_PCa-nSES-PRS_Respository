@@ -142,7 +142,7 @@ merged_data = imd_df %>%
   inner_join(ind_data, by = "eid")
 
 # And export
-write_csv(merged_data, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Files/ukb_ses_2024.02.21.csv")
+write_csv(merged_data, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Files/ukb_ses_2024.04.16.csv")
 
 
 # .----
@@ -155,11 +155,11 @@ rm(list = ls()[!(ls() %in% keep_vars)])
 # I want to take the PRS files that I've generated for PRS-451, add the ancestry, and combine into 1 file
 
 # Load PRS files
-eur_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/eur_Score_PRS_chrAll.sscore"
-chb_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/chinese_Score_PRS_chrAll.sscore"
-afr_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/afr_Score_PRS_chrAll.sscore"
-mix_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/mixed_Score_PRS_chrAll.sscore"
-sas_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/Totals/sas_Score_PRS_chrAll.sscore"
+eur_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/eur_Score_PRS_chrAll.sscore"
+chb_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/chinese_Score_PRS_chrAll.sscore"
+afr_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/afr_Score_PRS_chrAll.sscore"
+mix_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/mixed_Score_PRS_chrAll.sscore"
+sas_prs = "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/Totals/sas_Score_PRS_chrAll.sscore"
 
 # Document files and ancestries
 prs_files = c(eur_prs, chb_prs, afr_prs, mix_prs, sas_prs)
@@ -186,7 +186,7 @@ for (i in 1:length(ances)){
 }
 
 # Output this file
-write_csv(total_prs, "/labs/jswitte/Projects/jjudd5/PrCa_PRS269/AllAnces_Score_PRS269_chrAll.sscore")
+write_csv(total_prs, "/labs/jswitte/Projects/jjudd5/PrCa_PRS451/AllAnces_Score_PRS451_chrAll.sscore")
 
 
 
@@ -198,7 +198,23 @@ rm(list = ls()[!(ls() %in% keep_vars)])
 
 # Calculate healthcare utilization: -----
 # I will use the GP clinical data to calculate the number of clinic visits the year before enrollments
+# This file is so large I'm immediately going to load the file and filter it to the needed distinct columns before saving a variable
+clinical = fread("/labs/jswitte/Data/ShowcaseDloads/gp_clinical.txt", sep = "\t") %>% 
+  select(eid, event_dt) %>% distinct()
 
+# Now I need to match these IDs to the people I have in my dataset and pull out their date of assessment
+assessment_date = prostate_df %>% select(eid, assessment_date)
+clinical = clinical %>% inner_join(.,assessment_date)
+
+# Edit the dates to be in "date" format and then check if the date was within the last year
+clinical_new = clinical %>% mutate(event_dt = dmy(event_dt),
+                               assessment_date = ymd(assessment_date),
+                               within_year = (event_dt < assessment_date) & 
+                                             (abs(as.duration(interval(event_dt, assessment_date))) <= years(1))
+                               ) %>% 
+  filter(within_year)
+
+health_data = clinical_new %>% group_by(eid) %>% summarize(no_visits = n())
 
 
 # .----
@@ -217,7 +233,8 @@ ses_df = merged_data
 # I want to merge the datasets. I'm going to start based on prs, since I want to ensure I have individuals of EUR ancestry with genetic data
 merged_df_raw = prs_df %>% rename(eid = IID) %>% 
   left_join(cancer_df, by = "eid") %>% 
-  left_join(ses_df, by = "eid")
+  left_join(ses_df, by = "eid") %>% 
+  left_join(health_data, by = "eid")
 
 # I realize that there is a lot of missing data particularly for people w/o cacer or ses data. I want those removed
 merged_df = merged_df_raw %>% filter(!is.na(prostate))
@@ -229,5 +246,5 @@ rm(list = ls()[(ls() %>% str_which("^merged_df$", negate = T))])
 
 
 # let's output this file
-write_csv(merged_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_crc_2024.02.21.csv")
+write_csv(merged_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.04.16.csv")
 
