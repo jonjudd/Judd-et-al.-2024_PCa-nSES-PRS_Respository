@@ -1318,13 +1318,10 @@ for (j in ances){
   data_split = data_df %>% filter(Ances == j)
 
   # Create new data frame with PRS deciles and setting 40-60 as the reference
-  temp_df = data_split %>% drop_na(PRS) %>% 
-    mutate(PRS_ances_z = scale(PRS) 
-           )
-  
+  temp_df = data_split %>% drop_na(PRS) 
   
   # Set the model
-  formula = paste0("prostate_incident ~ PRS_ances_z", 
+  formula = paste0("prostate_incident ~ PRS_z", 
                    " + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
                    ) %>% as.formula()
       
@@ -1352,7 +1349,7 @@ for (j in ances){
 # And now export these models.
 summ_df %>%
   select(ancestry, !ancestry) %>% 
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp1_models_2024.03.21.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp1_models_2024.04.26.csv")
 
 ```
 
@@ -1420,8 +1417,9 @@ for (j in ances){
                )
     
     # Run models of interest
-      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment + PSA_Screening + no_visits"
-                       ) %>% as.formula()
+      formula = paste0("prostate_incident ~ Deprivation_z + PRS_z + Deprivation_z*PRS_z", 
+                   " + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
+                   ) %>% as.formula()
       
       model = logistic_reg() %>% fit(formula, data = temp_df)
     
@@ -1432,7 +1430,7 @@ for (j in ances){
         select(-std.error, -statistic) 
     
       # Pull specific results before saving
-      model_results[[i]] <- OR[2,]
+      model_results[[i]] <- OR[c(2,3,16),]
       
     
     # Benchmark that this set of model is complete 
@@ -1445,7 +1443,6 @@ for (j in ances){
   
   # Remove the term variable (since it's redundant) and then add to summary data_frame
   summ_df = results_df %>% 
-    select(-term) %>% 
     mutate(ancestry = j) %>% 
     rbind(summ_df, .) 
 
@@ -1454,7 +1451,7 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3b_models_2024.04.17.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp2_models_2024.04.26.csv")
 ```
 
 
@@ -1690,22 +1687,24 @@ for (j in ances){
     
     # Calculate the standardized data for the Deprivation index of interest
       temp_df = data_split %>% drop_na(!!i) %>% 
-        mutate(Deprivation_z = scale(!!i)[,1]
+        mutate(Deprivation_z = scale(!!i)[,1],
+               PSA_Screening = as.factor(PSA_Screening)
                )
     
     # Run models of interest
-      formula = paste0("no_visits ~ Deprivation_z + age_assessment + PSA_Screening"
+      formula = paste0("PSA_Screening ~ Deprivation_z + age_assessment"
                        ) %>% as.formula()
       
-      model = linear_reg() %>% fit(formula, data = temp_df)
+      model = logistic_reg() %>% fit(formula, data = temp_df)
     
-      results = tidy(model) %>% 
-        mutate(low95 = estimate - 1.96*std.error, 
-               up95 = estimate + 1.96*std.error) %>% 
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
         select(-std.error, -statistic) 
     
       # Pull specific results before saving
-      model_results[[i]] <- results[2,]
+      model_results[[i]] <- OR[2,]
       
     
     # Benchmark that this set of model is complete 
@@ -1727,7 +1726,7 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3a_models_2024.04.17.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp4_models_2024.04.23.csv")
 
 
 ```

@@ -14,6 +14,7 @@ library(readxl)
 
 # Changelog: ---------------------------
 # 01/24/22: Load files and build SFS from popMaxMAF and large meta pop groups
+# 04/26/22: Running this again for PRS-CSx
 
 # .----
 # .----
@@ -21,12 +22,13 @@ library(readxl)
 
 # Pull files: ---------------------------------
 
-# # # Test files
-# files = c("\\\\samba.scg.stanford.edu/jjudd5/Witte_Rotation/UKB_PrCa_PRS/TestMergingScores/Score_PRS_chr1.sscore",
-#           "\\\\samba.scg.stanford.edu/jjudd5/Witte_Rotation/UKB_PrCa_PRS/TestMergingScores/Score_PRS_chr2.sscore",
-#           "\\\\samba.scg.stanford.edu/jjudd5/Witte_Rotation/UKB_PrCa_PRS/TestMergingScores/Score_PRS_chr3.sscore")
+# # Test files
+# files = c("/labs/jswitte/Projects/jjudd5/PrCa_PRScsx/eur/Score_PRS_chr1.sscore",
+#           "/labs/jswitte/Projects/jjudd5/PrCa_PRScsx/eur/Score_PRS_chr2.sscore",
+#           "/labs/jswitte/Projects/jjudd5/PrCa_PRScsx/eur/Score_PRS_chr3.sscore")
+# 
 # output = "TotalPRS.sscore"
-
+# ---
 
 # The first thing is to pull files from command line
 args = commandArgs(trailingOnly=TRUE)
@@ -74,7 +76,7 @@ if (length(files) > 1){
 print("Merged all")
 
 # Sum PRS over individual
-mergedPRS = mergedData %>% group_by(IID) %>% summarise(PRS = sum(effect_weight_SUM))
+mergedPRS = mergedData %>% group_by(IID) %>% summarise(PRS = sum(weight_SUM))
 mergedPRS$PRS_z = scale(mergedPRS$PRS, center = TRUE, scale = TRUE) %>% as.numeric()
 
 print("Summed PRS")
