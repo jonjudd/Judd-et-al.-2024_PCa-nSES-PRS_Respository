@@ -28,9 +28,9 @@ cancer_file = "/labs/jswitte/Data/Phenotype/ukb-cancer-rephenotyping/pheno_files
 cancer_df = fread(input = cancer_file)
 
 # Choose columns of interest
-prostate_df = cancer_df %>% select(eid, contains("prostate"), case, case_malig, str_c("PC", 1:10), age_assessment, yob, mob, genotyping.array, Inferred.Gender) %>% 
+prostate_df = cancer_df %>% select(eid, prostate, othskin, case, str_c("PC", 1:10), age_assessment, yob, mob, genotyping.array, Inferred.Gender) %>% 
   # I also want to replace controls that list NA into 0's. This is just a data processsing step
-  mutate(across(matches("^prostate$|^prostate_incid_any$"), 
+  mutate(across(matches("^prostate$|^othskin$"), 
                 ~ replace_na(.x,0))) %>% 
   # I then also only want men so let's pull that too
   filter(Inferred.Gender == "M") %>% 
@@ -39,4 +39,4 @@ prostate_df = cancer_df %>% select(eid, contains("prostate"), case, case_malig, 
   select(-yob, -mob)
 
 # Great. Now let's output this into a specific place
-write_csv(prostate_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Cancer_Files/ukb_cancer_2023.07.05.csv")
+write_csv(prostate_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Cancer_Files/ukb_cancer_2024.05.16.csv")

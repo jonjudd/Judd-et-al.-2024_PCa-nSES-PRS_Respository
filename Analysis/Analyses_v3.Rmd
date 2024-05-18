@@ -43,7 +43,7 @@ library(meta)
 This load and edits the necessary data file to do my analysis. This includes the cancer, PRS, and SES data for the 451 variant PRS and the 5 ancestries I have
 
 ```{r}
-data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.04.16.csv")
+data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.05.16.csv")
 
 # Minor new definition of a function to be used later in this code block
 `%notin%` = Negate(`%in%`)
@@ -53,21 +53,28 @@ data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFi
 data_df = data_raw %>% 
   #First, I want a variable that counts any prostate cancer as case and no cancer at all as the control. 
   # If no prostate cancer, but other cancer, then that is NA
-  mutate(prostate_case = if_else(prostate == 1, 1, 
-                                 if_else(case == 1, NA, 0)
-                                 )
+  mutate(prostate_case = ifelse(prostate == 1, 1,
+                         ifelse(case == 1 & prostate == 0 & othskin == 0, NA,
+                         ifelse(case == 0, 0,
+                         ifelse(prostate == 0 & othskin == 1 & case == 1, 0, 0)))
+                         )
+                                 
          ) %>% 
   # I also want to include a measure of incident cancer
-  mutate(prostate_incident = if_else(prostate == 1 & prostate_incid_any == 0, NA,
-                                     if_else(prostate_incid_any == 0 & case == 0, 0, 
-                                             if_else(prostate_incid_any == 1, 1, NA))
+  mutate(prostate_incident = if_else(prostate_incid_any == 1, 1,
+                                     if_else(prostate_incid_any == 0 & prostate == 1, NA,
+                                     ifelse(case == 1 & prostate == 0 & othskin == 0, NA,
+                                     ifelse(case == 0, 0,
+                                     ifelse(prostate == 0 & othskin == 1 & case == 1, 0, 0))))
                                      )
          ) %>% 
   # I also want prevalent cancer
-  mutate(prostate_prevalent = if_else(prostate_incid_any == 1, NA,
-                                      if_else(prostate==0 & prostate_incid_any==0 & case ==0, 0, 
-                                              if_else(prostate==1 & prostate_incid_any==0, 1, NA))
-                                      )
+  mutate(prostate_prevalent =  if_else(prostate_incid_any == 1, NA,
+                                     if_else(prostate_incid_any == 0 & prostate == 1, 1,
+                                     ifelse(case == 1 & prostate == 0 & othskin == 0, NA,
+                                     ifelse(case == 0, 0,
+                                     ifelse(prostate == 0 & othskin == 1 & case == 1, 0, 0))))
+                                     )
          ) %>% 
   # Make all of these factors
   mutate(prostate_case = as.factor(prostate_case),
@@ -1731,4 +1738,40 @@ summ_df %>%
 
 ```
 
+
+## Supp 5 - Exclusion Criteria Differences
+
+Throughout my analyses, I have removed people that didn't have 
+- genetic data
+- IMD data, or 
+- PCa data 
+More importantly I removed people without non-melanoma skin cancer and no PSA screening data
+
+I am potentially reducing my power with all this reduction. Let me check how much people I removed with these steps
+
+```{r}
+# Reset the environment
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Load the raw data
+data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.04.16.csv")
+
+# First, how many men with genetic data (which is the number of non-empty PRS rows)
+men_with_genetic = data_raw %>% select(eid, PRS) %>% drop_na() %>% nrow()
+men_with_genetic
+
+# How many people without IMD data (count IMD NAs)
+men_wo_deprivation = data_raw %>% filter(is.na(IMD)) %>% nrow()
+men_wo_deprivation
+
+# Men without cancer data
+men_wo_pca = data_raw %>% filter(is.na(prostate)) %>% nrow()
+men_wo_pca
+
+# Men without psa screening data
+men_wo_psa = data_raw %>% filter(is.na(PSA_Screening)) %>% nrow()
+men_wo_psa
+
+```
 

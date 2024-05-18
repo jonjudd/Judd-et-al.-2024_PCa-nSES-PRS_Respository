@@ -32,27 +32,24 @@ rm(list = ls()[!(ls() %in% keep_vars)])
 # Pull cancer data: ----------
 # This sectino of the code will pull and format the cancer data for my expanded ancestry and prs analysis
 
-# Cancer file name
+# find and load cancer file
 cancer_file = "/labs/jswitte/Data/Phenotype/ukb-cancer-rephenotyping/pheno_files/ukPheno_2022-03-09.csv"
-
-# Let's fread this data
 cancer_df = fread(input = cancer_file)
 
 # Choose columns of interest
-prostate_df = cancer_df %>% select(eid, contains("prostate"), case, str_c("PC", 1:10), age_assessment, yob, mob, ethnicity, genotyping.array, Inferred.Gender) %>% 
+prostate_df = cancer_df %>% select(eid, prostate, prostate_incid_any, othskin, othskin_incid_any, case, str_c("PC", 1:10), age_assessment, yob, mob, genotyping.array, Inferred.Gender) %>% 
   # I also want to replace controls that list NA into 0's. This is just a data processsing step
-  mutate(across(matches("^prostate$|^prostate_incid_any$"), 
+  mutate(across(matches("^prostate|^othskin"), 
                 ~ replace_na(.x,0))) %>% 
+
   # I then also only want men so let's pull that too
   filter(Inferred.Gender == "M") %>% 
-  #I want to know the date of assessment or at least something close so I will use birth + age_assessment to figure that out
+  #Lastly, I want to know the date of assessment or at least something close so I will use birth + age_assessment to figure that out
   mutate(assessment_date = lubridate::my(paste0(mob,"-",yob)) + lubridate::years(as.integer(signif(age_assessment,2))) ) %>% 
-  select(-yob, -mob) %>% 
-  # And now remove variables that I now that I won't use
-  select(-contains(c("malig", "first")),-Inferred.Gender)
+  select(-yob, -mob)
 
 # Great. Now let's output this into a specific place
-write_csv(prostate_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Cancer_Files/ukb_cancer_2024.04.16.csv")
+write_csv(prostate_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Cancer_Files/ukb_cancer_2024.05.16.csv")
 
 
 # .----
@@ -98,11 +95,10 @@ townsend_df = ukb6192_df %>% select(eid, '189-0.0', '2365-0.0', '3809-0.0',
 names(townsend_df) = c("eid", "Townsend_Index", "PSA_Screening","Time_Since_PSA",
                        "Assessment_Centre","Height","BMI")
 
-# Also remove people that aren't either a yes or no on screening. 
-# Also remove people that don't know if they've been screened or didn't answer
+# Dont' remove people that don't have PSA testing data, but make them all NAs
 townsend_df = townsend_df %>% 
-  filter(!is.na(PSA_Screening), PSA_Screening == 1 | PSA_Screening == 0) %>% 
-  filter(is.na(Time_Since_PSA) | Time_Since_PSA != -3 | Time_Since_PSA != -1)
+  mutate(PSA_Screening = ifelse(PSA_Screening != 0 & PSA_Screening != 1, NA, PSA_Screening)
+         )
 
 # I also want to convert in time since screening any value that is -10 into 0.5. Since -10 == "less than a year of screening",
 # I will convert it to 0.5 to represent 6 months so I'll be at most half a year off, but it will be easier to 
@@ -142,7 +138,7 @@ merged_data = imd_df %>%
   inner_join(ind_data, by = "eid")
 
 # And export
-write_csv(merged_data, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Files/ukb_ses_2024.04.16.csv")
+write_csv(merged_data, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/SES_Files/ukb_ses_2024.05.16.csv")
 
 
 # .----
@@ -246,5 +242,5 @@ rm(list = ls()[(ls() %>% str_which("^merged_df$", negate = T))])
 
 
 # let's output this file
-write_csv(merged_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.04.16.csv")
+write_csv(merged_df, "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.05.16.csv")
 
