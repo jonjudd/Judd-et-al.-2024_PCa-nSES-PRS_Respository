@@ -35,6 +35,8 @@ library(caret)
 library(patchwork)
 library(gridExtra)
 library(meta)
+library(openxlsx)
+
 
 ```
 
@@ -80,8 +82,6 @@ data_df = data_raw %>%
   mutate(prostate_case = as.factor(prostate_case),
          prostate_incident = as.factor(prostate_incident),
          prostate_prevalent = as.factor(prostate_prevalent)) %>% 
-  # Remove non-NA's for screening PSA
-  filter(!is.na(PSA_Screening)) %>% 
   # I want to remove non-UK assessment centers
   filter(Assessment_Centre %notin% c(11023, 11022, 11003, 11005, 11004)
   ) %>% 
@@ -100,7 +100,7 @@ This is where I define the SES variables that are used throughout the models
 
 ```{r}
 # SES variables to loop through
-ses_factors = names(data_df) %>% .[25:33]
+ses_factors = names(data_df) %>% .[24:32]
 ses_factors
 
 # Pull the European, African, South Asian, and Mixed ancestries that I plan to look at
@@ -124,13 +124,6 @@ The first figure/table that I want will charactertize my data. THe main informat
 -   Split across cases and controls
 -   Separated on PSA Screening
 
-Create a list variable to save the different data since it'll be hard to format here
-
-```{r}
-# Create a list of variables to save my results
-table1 = list()
-```
-
 ### SES Distribution
 
 I first want to characterize the distribution of my cases/controls/prevalence across the different nSES/PRS quartiles.
@@ -141,6 +134,8 @@ keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
                    "table1") 
 rm(list = ls()[!(ls() %in% keep_variables)])
 
+# List to save results through section
+table1 = list()
 
 
 # Pull the relevant variables that I'm trying to summarize
@@ -176,7 +171,28 @@ summ_df =  split_prev %>%
   # Now I want to pivot the data wider to enable me as a final clarity step
   pivot_wider(names_from = prostate_incident,
                names_sep = ".",
-               values_from = c(Mean, SD)) 
+               values_from = c(Mean, SD)) %>% 
+  
+  # I want to combine the means and Sds for cases/controls
+  mutate(across(where(is.numeric), ~ signif(., digits = 2))) %>% 
+  mutate(Control = str_c(Mean.0, " (", SD.0, ")"),
+         Case = str_c(Mean.1, " (", SD.1, ")")
+         ) %>% 
+  select(-c(Mean.0, Mean.1, SD.0, SD.1))
+
+# I also want to quickly figure out the exact numbers per ancestry per case/control
+summ_df2 =  split_prev %>% 
+  # These next few lines will calculate the case/controls per ancestry
+  group_by(Ances, prostate_incident) %>% 
+  na.omit() %>% 
+  summarize(count = n()) %>% 
+  # This is for formatting and easy understanding
+  pivot_wider(names_from = prostate_incident,
+              names_sep = ".",
+              values_from = count) %>% 
+  t() %>% as.data.frame() 
+colnames(summ_df2) = summ_df2[1,]
+summ_df2 = summ_df2[-1,] %>% select(eur, afr, sas, mix)
 
 # Separately, I want to run a t-test on my PRS and nSES variables to see if there is a difference in means
 diff_ses = split_prev %>% group_by(Ances) %>% 
@@ -199,14 +215,11 @@ diff_ses_v2 = split_prev %>% group_by(Ances) %>%
                    .names = "{col}_{.fn}")
             )
 
-# # Add the ancestry and save to overarching dataframe
-# summ_df = prev_summary %>% 
-#   mutate(ancestry = j) %>% 
-#   rbind(summ_df, .)
-#   
-# # Save the summary variables
-# table1 = table1 %>% list_assign(nSES_dist = summ_df)
 
+# Save the summary variables
+table1 = c(table1, list(total_sample = summ_df2,
+                     nSES_dist = summ_df)
+           )
 ```
 
 ### PSA Distribution
@@ -237,7 +250,7 @@ for (j in ances){
     select(contains( c("eid",
                        "prostate_incident",
                        "PSA_Screening")) 
-           ) %>% na.omit() %>% 
+           ) %>% na.omit() %>%  
     # Now group by my 2 variables and see where they land
     group_by(prostate_incident, PSA_Screening) %>% 
     summarize(Count = n()) %>% 
@@ -252,6 +265,12 @@ for (j in ances){
   
   }
 
+# I want to make some quick edits for formatting to assist with later formatting
+summ_df = summ_df %>% mutate(Control_perc = signif(Controls/(Controls+Cases), digits = 2),
+                             Cases_perc = 1-Control_perc) %>% 
+                      mutate(Controls = str_c(Controls, " (", Control_perc, ")"),
+                             Cases = str_c(Cases, " (", Cases_perc, ")")) %>% 
+                      select(ancestry, PSA_Screening, Controls, Cases)
 
 
 # Now I can save this
@@ -295,16 +314,39 @@ anthro_diff = data_anthro %>% na.omit() %>%
   )
 
 
-# # Add the ancestry and save to overarching dataframe
-# summ_df = prev_summary %>% 
-#   mutate(ancestry = j) %>% 
-#   rbind(summ_df, .)
-#   
-# # Save the summary variables
-# table1 = table1 %>% list_assign(nSES_dist = summ_df)
+# Edit the distribution data to make it easier to add to table
+summ_df = anthro_descrip %>% mutate(across(where(is.numeric), ~ signif(., digits = 3))) %>% 
+  mutate(age_assessment = str_c(age_assessment_mean, " (", age_assessment_sd, ")"),
+         BMI = str_c(BMI_mean, " (", BMI_sd, ")"),
+         Height = str_c(Height_mean, " (", Height_sd, ")")
+         ) %>% 
+  select(Ances, prostate_incident, age_assessment, BMI, Height)
+
+
+# Save the summary variables
+table1 = table1 %>% list_assign(anthro_dist = summ_df)
 
 
 ```
+
+### Output table
+
+This is complementary code that will take the sheets from the previous sections and output them into a sheet
+
+```{r}
+# Create a new workbook
+wb <- createWorkbook()
+
+# Add each data frame in the list as a new sheet
+for(sheet_name in names(table1)) {
+  addWorksheet(wb, sheet_name)
+  writeData(wb, sheet = sheet_name, table1[[sheet_name]])
+}
+
+# Save the workbook to a file
+saveWorkbook(wb, file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table1_stats_2024.5.20.xlsx", overwrite = TRUE)
+```
+
 
 ## Figure 1 - PRS Decile Plot
 
@@ -346,7 +388,7 @@ for (j in ances){
   
   # Set the model
   formula = paste0("prostate_incident ~ PRS_decile", 
-                   " + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
+                   " + age_assessment", str_flatten(str_c("+ PC",1:10))
                    ) %>% as.formula()
       
   model = logistic_reg() %>% fit(formula, data = temp_df)
@@ -377,7 +419,7 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure1_models_2024.03.21.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure1_models_2024.05.20.csv")
 
 ```
 
@@ -587,7 +629,7 @@ for (j in ances){
                )
     
     # Run models of interest
-      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment + PSA_Screening"
+      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment"
                        ) %>% as.formula()
       
       model = logistic_reg() %>% fit(formula, data = temp_df)
@@ -621,7 +663,7 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure2_models_2024.03.21.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure2_models_2024.05.21.csv")
 
 
 # I also want to try creating a table of these models so I'm going to do some extra formatting and then export that table
@@ -646,7 +688,7 @@ table2 = summ_df %>%
 
 # And now export this table
 table2 %>% 
-  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table2_models_2024.03.21.csv")
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table2_models_2024.05.21.csv")
 
 ```
 
@@ -924,7 +966,7 @@ summ_df = left_join(summ_df, difference_df) %>%
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure3_models_2024.03.21.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure3_models_2024.05.21.csv")
 
 
 ```
@@ -946,6 +988,13 @@ p = summ_df %>%
                   position = position_dodge(width = 1)) + 
   geom_text(aes(x = 1.09, y = ses, label = diff_p.val),
             hjust = 0) +
+  
+  # Change the legend labels
+  scale_color_manual(
+    values = c("1" = "blue", "0" = "red"),
+    labels = c("At least one screening", "Never screened"),
+    name = "Ever PSA Screened?"  # Change legend title
+  ) +
   
   # Now adding a x-intercept and axis titles
   geom_vline(xintercept = 1, linetype = "dashed") +
@@ -1140,7 +1189,7 @@ for (i in ses_factors){
     model_data = temp_df %>% filter(Deprivation_Quartiles == j)
     
     # Set the model
-    formula = paste0("prostate_incident ~ PRS_z + age_assessment + PSA_Screening", 
+    formula = paste0("prostate_incident ~ PRS_z + age_assessment", 
                      str_flatten(str_c("+ PC",1:10))
                      ) %>% as.formula()
       
@@ -1189,7 +1238,7 @@ for (i in ses_factors){
   
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure4_models_2024.03.21.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure4_models_2024.05.21.csv")
 
 
 # I also want to try creating a table of these models so I'm going to do some extra formatting and then export that table
@@ -1217,7 +1266,7 @@ table4 = summ_df %>%
 
 # And now export this table
 table4 %>% 
-  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table4_models_2024.03.21.csv")
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table4_models_2024.05.21.csv")
 
 ```
 
@@ -1462,11 +1511,227 @@ summ_df %>%
 ```
 
 
-## Supp 3 - Healthcare Utilization
+## Supp 3 - Sensitivity Analyses (PSA Screening & Healthcare Utilization)
 
-I will use this next section to start incorporating some of the models/questions I have about healthcare utilization. I will specificially make 2 sets of models
-- Healthcare Utilization ~ nSES
+I will use this next section to start incorporating some of the models/questions I have about PSA Screening and healthcare utilization. I will specificially make 4 sets of models
+- PCa ~ nSES + PSA Screening
 - PCa ~ nSES + Healthcare Utilization
+- PCA ~ nSES + PSA + Healthcare 
+- corr(PSA Screening, Healthcare Utilization, nSES)
+
+### PCa ~ nSES + PSA Screening
+
+I want to include PSA Screening as a covariate in my nSES to see how the effect changes
+
+```{r}
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble() # For nSES effects
+
+# I also want to loop through this per ancestry
+for (j in ances){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+  model_results = list() # This is for the nSES effects
+
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    
+    # Create symbol for coding reason
+    i = sym(i)
+    
+    # Calculate the standardized data for the Deprivation index of interest
+      temp_df = data_split %>% drop_na(!!i) %>% 
+        mutate(Deprivation_z = scale(!!i)[,1]
+               )
+    
+    # Run models of interest
+      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment + PSA_Screening"
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = temp_df)
+    
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) 
+    
+      # Pull specific results before saving
+      model_results[[i]] <- OR[c(2,4),]
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+
+  # Remove the term variable (since it's redundant) and then add to summary data_frame
+  summ_df = results_df %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+
+}
+summ_df = summ_df %>% select(ancestry, ses, everything())
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3_PCA.PSA_models_2024.05.20.csv") 
+
+```
+
+### PCa ~ nSES + Healthcare
+
+I also want to make the models where I include this variable as a covariate
+
+```{r}
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble() # For nSES effects
+
+# I also want to loop through this per ancestry
+for (j in ances){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+  model_results = list() # This is for the nSES effects
+
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    
+    # Create symbol for coding reason
+    i = sym(i)
+    
+    # Calculate the standardized data for the Deprivation index of interest
+      temp_df = data_split %>% drop_na(!!i) %>% 
+        mutate(Deprivation_z = scale(!!i)[,1]
+               )
+    
+    # Run models of interest
+      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment + no_visits"
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = temp_df)
+    
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) 
+    
+      # Pull specific results before saving
+      model_results[[i]] <- OR[c(2,4),]
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+
+  # Remove the term variable (since it's redundant) and then add to summary data_frame
+  summ_df = results_df %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+
+}
+summ_df = summ_df %>% select(ancestry, ses, everything())
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3_PCA.Visits_models_2024.05.20.csv") 
+
+```
+
+### PCa ~ nSES + PSA + Healthcare
+
+```{r}
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble() # For nSES effects
+
+# I also want to loop through this per ancestry
+for (j in ances){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+  model_results = list() # This is for the nSES effects
+
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    
+    # Create symbol for coding reason
+    i = sym(i)
+    
+    # Calculate the standardized data for the Deprivation index of interest
+      temp_df = data_split %>% drop_na(!!i) %>% 
+        mutate(Deprivation_z = scale(!!i)[,1]
+               )
+    
+    # Run models of interest
+      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment + PSA_Screening + no_visits"
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = temp_df)
+    
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) 
+    
+      # Pull specific results before saving
+      model_results[[i]] <- OR[c(2,4,5),]
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+
+  # Remove the term variable (since it's redundant) and then add to summary data_frame
+  summ_df = results_df %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .)
+
+}
+summ_df = summ_df %>% select(ancestry, ses, everything())
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3_PCA.PSA.Visits_models_2024.05.20.csv") 
+
+```
 
 ### Healthcare ~  nSES
 
@@ -1505,7 +1770,7 @@ for (j in ances){
                )
     
     # Run models of interest
-      formula = paste0("no_visits ~ Deprivation_z + age_assessment + PSA_Screening"
+      formula = paste0("no_visits ~ Deprivation_z + age_assessment"
                        ) %>% as.formula()
       
       model = linear_reg() %>% fit(formula, data = temp_df)
@@ -1538,128 +1803,23 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3a_models_2024.04.17.csv")
-
-
-```
-
-We want to use this #_visits results to make plots (NOT COMPLETE AT ALL)
-
-```{r}
-
-# Build main volcano plot
-p = summ_df %>%
-  ggplot(aes(y = fct_rev(ses))) +
-  theme_classic() +
-  theme(legend.position="top") +
-  
-  # And then adding the data
-  geom_pointrange(aes(x = OR, xmin = low95, xmax = up95, color = PSA_Screening), 
-                  show.legend = T,
-                  shape = 15,
-                  position = position_dodge(width = 1)) + 
-  geom_text(aes(x = 1.09, y = ses, label = diff_p.val),
-            hjust = 0) +
-  
-  # Now adding a x-intercept and axis titles
-  geom_vline(xintercept = 1, linetype = "dashed") +
-  labs(x = "Odds Ratio", y = "") +
-  
-  # Now add space
-  coord_cartesian(ylim = c(1,10), xlim = c(0.85, 1.1)) +
-  
-  # Add note about the effect
-  annotate("text", x = 0.95, y = 10, label = "Deprivation \nProtective") +
-  annotate("text", x = 1.05, y = 10, label = "Deprivation \nHarmful")  +
-  annotate("text", x = 1.095, y = 10, label = "P-value")
-
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3_Visits.nSES_models_2024.05.20.csv")
 
 
 ```
 
 
-### PCa ~ nSES + Healthcare
+### Correlations between PSA Screening, # of visits, ans nSES variables
 
-I also want to make the models where I include this variable as a covariate
+Since I'm getting interesting results in the nSES results with PSA screening and # of visits, specifically the positive effect of deprivation (inverse nSES) and # of visits
 
 ```{r}
-keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
-rm(list = ls()[!(ls() %in% keep_variables)])
+corr_matrix = data_df %>% select(PSA_Screening, no_visits, all_of(ses_factors)) %>% 
+  cor(.,use = "pairwise.complete.obs") %>% as.data.frame()
 
-# Create some dataframes to save the prevalence per ancestry
-summ_df = tibble() # For nSES effects
-summ_df2 = tibble() # For #_visits effects
+corr_matrix %>% 
+  write_csv(., file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3_corrPSA.Visits.nSES_2024.05.20.csv")
 
-# I also want to loop through this per ancestry
-for (j in ances){
-  
-  # Print ancestry to benchmark
-  print(j)
-  
-  # Let's pull out the ancestry specific data and set list for models for this ancestry
-  data_split = data_df %>% filter(Ances == j)
-  model_results = list() # This is for the nSES effects
-  model_results2 = list() # This is for the #_visits effects
-    
-  # Now create a loop that models the variables of interest and then saves them to a list of models
-  # Each loop will run a model for total, incidence, and prevalent cases
-  for (i in ses_factors){
-  
-    
-    # Create symbol for coding reason
-    i = sym(i)
-    
-    # Calculate the standardized data for the Deprivation index of interest
-      temp_df = data_split %>% drop_na(!!i) %>% 
-        mutate(Deprivation_z = scale(!!i)[,1]
-               )
-    
-    # Run models of interest
-      formula = paste0("prostate_incident ~ Deprivation_z + age_assessment + PSA_Screening + no_visits"
-                       ) %>% as.formula()
-      
-      model = logistic_reg() %>% fit(formula, data = temp_df)
-    
-      OR = tidy(model, exponentiate = T) %>% 
-        rename(OR = estimate) %>% 
-        mutate(low95 = exp(log(OR) - 1.96*std.error), 
-               up95 = exp(log(OR) + 1.96*std.error)) %>% 
-        select(-std.error, -statistic) 
-    
-      # Pull specific results before saving
-      model_results[[i]] <- OR[2,]
-      model_results2[[i]] = OR[5,]
-      
-    
-    # Benchmark that this set of model is complete 
-    print(i)
-  }
-
-  
-  # Save the models
-  results_df = list_rbind(model_results, names_to = "ses") 
-  results_df2 = list_rbind(model_results2, names_to = "ses") 
-  
-  # Remove the term variable (since it's redundant) and then add to summary data_frame
-  summ_df = results_df %>% 
-    select(-term) %>% 
-    mutate(ancestry = j) %>% 
-    rbind(summ_df, .) 
-  
-  # Repeat the same for the healthcare utilization effects
-  summ_df2 = results_df2 %>% 
-    mutate(ancestry = j) %>% 
-    rbind(summ_df2, .) 
-
-}
-  
-
-# And now export these models.
-summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3b_models_2024.04.17.csv") # Saving the effect of nSES
-
-summ_df2 %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3c_models_2024.04.17.csv") # Saving the effect of # of visits
 ```
 
 
