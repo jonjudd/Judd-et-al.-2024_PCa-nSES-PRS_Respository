@@ -37,6 +37,9 @@ library(gridExtra)
 library(meta)
 library(openxlsx)
 
+# Let's load custom functions
+`%notin%` = Negate(`%in%`)
+
 
 ```
 
@@ -46,10 +49,6 @@ This load and edits the necessary data file to do my analysis. This includes the
 
 ```{r}
 data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.05.16.csv")
-
-# Minor new definition of a function to be used later in this code block
-`%notin%` = Negate(`%in%`)
-
 
 # I also want to make sure to have new cancer variables that I can plug into my models. 
 data_df = data_raw %>% 
@@ -991,8 +990,8 @@ p = summ_df %>%
   
   # Change the legend labels
   scale_color_manual(
-    values = c("1" = "blue", "0" = "red"),
-    labels = c("At least one screening", "Never screened"),
+    values = c( "0" = "red", "1" = "blue"),
+    labels = c("Never screened", "At least one screening"),
     name = "Ever PSA Screened?"  # Change legend title
   ) +
   
@@ -1352,47 +1351,158 @@ This next area for all the extra little figures that I want to generate that peo
 
 Instead of the decile plot, I want to run an analysis where I treat PRS score as continuous scores. I will need to make sure to standardize the PRS scores by ancestry prior to modeling
 
-I'm going to split the modeling and plot generation chunk, but won't label it for the sake of the structure of this document
-```{r}
+I want to repeat this specific analysis for the PRS269 and PRScsx scores. To do that, I need to process them the same way as the other data before hand. Let me note those steps
 
+### Process PRS269 and PRS-CSx data
+
+```{r}
 # Remove non-relevant variables
-keep_variables = c("data_df", "keep_variables", "ses_factors", "ances",
+keep_variables = c("data_df", "data_df_PRS269", "data_df_PRScsx", "keep_variables", "ses_factors", "ances",
                    "table1") 
 rm(list = ls()[!(ls() %in% keep_variables)])
 
+# Processing PRS269 data
+data_df_PRS269 = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_PRS269_2024.05.16.csv") %>% 
+  #First, I want a variable that counts any prostate cancer as case and no cancer at all as the control. 
+  # If no prostate cancer, but other cancer, then that is NA
+  mutate(prostate_case = ifelse(prostate == 1, 1,
+                         ifelse(case == 1 & prostate == 0 & othskin == 0, NA,
+                         ifelse(case == 0, 0,
+                         ifelse(prostate == 0 & othskin == 1 & case == 1, 0, 0)))
+                         )
+                                 
+         ) %>% 
+  # I also want to include a measure of incident cancer
+  mutate(prostate_incident = if_else(prostate_incid_any == 1, 1,
+                                     if_else(prostate_incid_any == 0 & prostate == 1, NA,
+                                     ifelse(case == 1 & prostate == 0 & othskin == 0, NA,
+                                     ifelse(case == 0, 0,
+                                     ifelse(prostate == 0 & othskin == 1 & case == 1, 0, 0))))
+                                     )
+         ) %>% 
+  # I also want prevalent cancer
+  mutate(prostate_prevalent =  if_else(prostate_incid_any == 1, NA,
+                                     if_else(prostate_incid_any == 0 & prostate == 1, 1,
+                                     ifelse(case == 1 & prostate == 0 & othskin == 0, NA,
+                                     ifelse(case == 0, 0,
+                                     ifelse(prostate == 0 & othskin == 1 & case == 1, 0, 0))))
+                                     )
+         ) %>% 
+  # Make all of these factors
+  mutate(prostate_case = as.factor(prostate_case),
+         prostate_incident = as.factor(prostate_incident),
+         prostate_prevalent = as.factor(prostate_prevalent)) %>% 
+  # I want to remove non-UK assessment centers
+  filter(Assessment_Centre %notin% c(11023, 11022, 11003, 11005, 11004)
+  ) %>% 
+  # I also want assessment center and the smoking to be a factor
+  mutate(Assessment_Centre = as.factor(Assessment_Centre)) %>% 
+  
+  # And rename Townsend_Index to just Townsend for clarity
+  rename(Townsend = Townsend_Index)
 
-# Create some dataframes to save the prevalence per ancestry
+# -- -- -- -- -- -- -- -- -- -- -- --
+# Process PRS-CSX data
+data_df_PRScsx = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_PRScsx_2024.05.16.csv") %>% 
+  #First, I want a variable that counts any prostate cancer as case and no cancer at all as the control. 
+  # If no prostate cancer, but other cancer, then that is NA
+  mutate(prostate_case = ifelse(prostate == 1, 1,
+                         ifelse(case == 1 & prostate == 0 & othskin == 0, NA,
+                         ifelse(case == 0, 0,
+                         ifelse(prostate == 0 & othskin == 1 & case == 1, 0, 0)))
+                         )
+                                 
+         ) %>% 
+  # I also want to include a measure of incident cancer
+  mutate(prostate_incident = if_else(prostate_incid_any == 1, 1,
+                                     if_else(prostate_incid_any == 0 & prostate == 1, NA,
+                                     ifelse(case == 1 & prostate == 0 & othskin == 0, NA,
+                                     ifelse(case == 0, 0,
+                                     ifelse(prostate == 0 & othskin == 1 & case == 1, 0, 0))))
+                                     )
+         ) %>% 
+  # I also want prevalent cancer
+  mutate(prostate_prevalent =  if_else(prostate_incid_any == 1, NA,
+                                     if_else(prostate_incid_any == 0 & prostate == 1, 1,
+                                     ifelse(case == 1 & prostate == 0 & othskin == 0, NA,
+                                     ifelse(case == 0, 0,
+                                     ifelse(prostate == 0 & othskin == 1 & case == 1, 0, 0))))
+                                     )
+         ) %>% 
+  # Make all of these factors
+  mutate(prostate_case = as.factor(prostate_case),
+         prostate_incident = as.factor(prostate_incident),
+         prostate_prevalent = as.factor(prostate_prevalent)) %>% 
+  # I want to remove non-UK assessment centers
+  filter(Assessment_Centre %notin% c(11023, 11022, 11003, 11005, 11004)
+  ) %>% 
+  # I also want assessment center and the smoking to be a factor
+  mutate(Assessment_Centre = as.factor(Assessment_Centre)) %>% 
+  
+  # And rename Townsend_Index to just Townsend for clarity
+  rename(Townsend = Townsend_Index)
+
+
+```
+
+### Modeling risk for 3 PRS models
+
+```{r}
+# Remove non-relevant variables
+keep_variables = c("data_df", "data_df_PRS269", "data_df_PRScsx", "keep_variables", "ses_factors", "ances",
+                   "table1") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Create some dataframes to save the results
 summ_df = tibble()
 
-# I also want to loop through this per ancestry
+# I also want to loop through this per ancestry and I'm actually going to use this to run through all the scores I have
 for (j in ances){
   
   # Print ancestry to benchmark
   print(j)
   
   # Let's pull out the ancestry specific data and set list for models for this ancestry
-  data_split = data_df %>% filter(Ances == j)
-
-  # Create new data frame with PRS deciles and setting 40-60 as the reference
-  temp_df = data_split %>% drop_na(PRS) 
+  data_split_PRS451 = data_df %>% filter(Ances == j) %>% drop_na(PRS) 
+  data_split_PRS269 = data_df_PRS269 %>% filter(Ances == j) %>%  drop_na(PRS) 
+  data_split_PRScsx = data_df_PRScsx %>% filter(Ances == j) %>% drop_na(PRS) 
   
   # Set the model
   formula = paste0("prostate_incident ~ PRS_z", 
                    " + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
                    ) %>% as.formula()
-      
-  model = logistic_reg() %>% fit(formula, data = temp_df)
+  
+  # Run the model    
+  model_451 = logistic_reg() %>% fit(formula, data = data_split_PRS451)
+  model_269 = logistic_reg() %>% fit(formula, data = data_split_PRS269)
+  model_csx = logistic_reg() %>% fit(formula, data = data_split_PRScsx)
   
       
-  # Run the model
-  OR = tidy(model, exponentiate = T) %>% 
-  rename(OR = estimate) %>% 
-  mutate(low95 = exp(log(OR) - 1.96*std.error), 
-  up95 = exp(log(OR) + 1.96*std.error)) %>% 
-  select(-std.error, -statistic) 
+  # Organize the model reulst
+  OR_451 = tidy(model_451, exponentiate = T) %>% 
+    rename(OR = estimate) %>% 
+    mutate(PRS = "PRS_451") %>% 
+    mutate(low95 = exp(log(OR) - 1.96*std.error), 
+           up95 = exp(log(OR) + 1.96*std.error)) %>% 
+    select(PRS, OR, p.value, low95, up95) %>% .[2,]
   
-  # Format the results by pulling relevant data and adding the reference
-  results_df = OR[2,] 
+  OR_269 = tidy(model_269, exponentiate = T) %>% 
+    rename(OR = estimate) %>% 
+    mutate(PRS = "PRS_269") %>% 
+    mutate(low95 = exp(log(OR) - 1.96*std.error), 
+           up95 = exp(log(OR) + 1.96*std.error)) %>% 
+    select(PRS, OR, p.value, low95, up95) %>% .[2,]
+  
+  OR_csx = tidy(model_csx, exponentiate = T) %>% 
+    rename(OR = estimate) %>% 
+    mutate(OR = 1/OR) %>% # I messed up the effect allele when calculating the score so I have the inverse effect
+    mutate(PRS = "PRS_csx") %>% 
+    mutate(low95 = exp(log(OR) - 1.96*std.error), 
+           up95 = exp(log(OR) + 1.96*std.error)) %>% 
+    select(PRS, OR, p.value, low95, up95) %>% .[2,]
+  
+  # Merge the separate model results
+  results_df = rbind(OR_451, OR_269, OR_csx)
   
   # Then add to summary data_frame
   summ_df = results_df %>% 
@@ -1400,19 +1510,19 @@ for (j in ances){
     rbind(summ_df, .)
 
 }
-  
-
 # And now export these models.
 summ_df %>%
   select(ancestry, !ancestry) %>% 
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp1_models_2024.04.26.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp1_models_2024.05.21.csv")
 
 ```
 
-Now generate a simple forest plot of this data
+### Plotting risk
+
+Now generate a simple forest plot of these associations for each of the models
 ```{r}
-summ_df %>% 
-  
+# For PRS451
+summ_df %>% filter(PRS == "PRS_451") %>% 
   # Define the space and plot area
   ggplot() + 
   theme_minimal()+
@@ -1433,6 +1543,53 @@ summ_df %>%
   ggtitle("Prostate Cancer PRS Risk") +
   theme(axis.title = element_text(size = 16),
         axis.text = element_text(size = 16))
+
+# For PRS269
+summ_df %>% filter(PRS == "PRS_269") %>% 
+  # Define the space and plot area
+  ggplot() + 
+  theme_minimal()+
+  # Place the ORs and vline
+  geom_pointrange(aes(x = OR, y = ancestry, xmin = low95, xmax = up95, colour = ancestry),
+                  show.legend = F, 
+                  position = position_dodge(width = 1)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  
+  # Final labels
+  labs(x = "OR", y = "Genetic Ancestry Group") +
+  scale_y_discrete(labels = c("mix" = "Mixed",
+                              "sas" = "South Asian",
+                              "afr" = "African",
+                              "eur" = "European"),
+                   limits = c("sas","mix","afr","eur")
+                   ) +
+  ggtitle("Prostate Cancer PRS Risk") +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 16))
+
+# For PRScsx
+summ_df %>% filter(PRS == "PRS_csx") %>% 
+  # Define the space and plot area
+  ggplot() + 
+  theme_minimal()+
+  # Place the ORs and vline
+  geom_pointrange(aes(x = OR, y = ancestry, xmin = low95, xmax = up95, colour = ancestry),
+                  show.legend = F, 
+                  position = position_dodge(width = 1)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  
+  # Final labels
+  labs(x = "OR", y = "Genetic Ancestry Group") +
+  scale_y_discrete(labels = c("mix" = "Mixed",
+                              "sas" = "South Asian",
+                              "afr" = "African",
+                              "eur" = "European"),
+                   limits = c("sas","mix","afr","eur")
+                   ) +
+  ggtitle("Prostate Cancer PRS Risk") +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 16))
+
 
 ```
 
@@ -1474,7 +1631,7 @@ for (j in ances){
     
     # Run models of interest
       formula = paste0("prostate_incident ~ Deprivation_z + PRS_z + Deprivation_z*PRS_z", 
-                   " + age_assessment + PSA_Screening", str_flatten(str_c("+ PC",1:10))
+                   " + age_assessment", str_flatten(str_c("+ PC",1:10))
                    ) %>% as.formula()
       
       model = logistic_reg() %>% fit(formula, data = temp_df)
@@ -1507,7 +1664,7 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp2_models_2024.04.26.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp2_models_2024.05.21.csv")
 ```
 
 
@@ -1733,6 +1890,89 @@ summ_df %>%
 
 ```
 
+
+## Supp 4 - Associations with covariates
+
+In the previous suppliments, I model PSA Screening and Healthcare utilization as covariates with nSES. I want to see the association of these covariates with nSES independently. I also want to see their correlation with each other the nSES variables
+
+This will be 3 models
+- PSA ~ nSES
+- Healthcare ~ nSES
+~ Correlations w/ PSA~Healthcare~nSES
+
+### PSA ~ nSES
+
+```{r}
+keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
+rm(list = ls()[!(ls() %in% keep_variables)])
+
+# Create some dataframes to save the prevalence per ancestry
+summ_df = tibble()
+
+# I also want to loop through this per ancestry
+for (j in ances){
+  
+  # Print ancestry to benchmark
+  print(j)
+  
+  # Let's pull out the ancestry specific data and set list for models for this ancestry
+  data_split = data_df %>% filter(Ances == j)
+  model_results = list()
+    
+  # Now create a loop that models the variables of interest and then saves them to a list of models
+  # Each loop will run a model for total, incidence, and prevalent cases
+  for (i in ses_factors){
+  
+    
+    # Create symbol for coding reason
+    i = sym(i)
+    
+    # Calculate the standardized data for the Deprivation index of interest
+      temp_df = data_split %>% drop_na(!!i) %>% 
+        mutate(Deprivation_z = scale(!!i)[,1],
+               PSA_Screening = as.factor(PSA_Screening)
+               )
+    
+    # Run models of interest
+      formula = paste0("PSA_Screening ~ Deprivation_z + age_assessment"
+                       ) %>% as.formula()
+      
+      model = logistic_reg() %>% fit(formula, data = temp_df)
+    
+      OR = tidy(model, exponentiate = T) %>% 
+        rename(OR = estimate) %>% 
+        mutate(low95 = exp(log(OR) - 1.96*std.error), 
+               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+        select(-std.error, -statistic) 
+    
+      # Pull specific results before saving
+      model_results[[i]] <- OR[2,]
+      
+    
+    # Benchmark that this set of model is complete 
+    print(i)
+  }
+
+  
+  # Save the models
+  results_df = list_rbind(model_results, names_to = "ses") 
+  
+  # Remove the term variable (since it's redundant) and then add to summary data_frame
+  summ_df = results_df %>% 
+    select(-term) %>% 
+    mutate(ancestry = j) %>% 
+    rbind(summ_df, .) 
+
+}
+  
+
+# And now export these models.
+summ_df %>%
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp4_PSA.nSES_models_2024.04.23.csv")
+
+
+```
+
 ### Healthcare ~  nSES
 
 I will use my new variable that has counted the number of GP visits in the year prior to recruitments
@@ -1803,7 +2043,7 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3_Visits.nSES_models_2024.05.20.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp4_Visits.nSES_models_2024.05.20.csv")
 
 
 ```
@@ -1818,83 +2058,7 @@ corr_matrix = data_df %>% select(PSA_Screening, no_visits, all_of(ses_factors)) 
   cor(.,use = "pairwise.complete.obs") %>% as.data.frame()
 
 corr_matrix %>% 
-  write_csv(., file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp3_corrPSA.Visits.nSES_2024.05.20.csv")
-
-```
-
-
-## Supp 4 - PSA Screening
-
-This suppliment section is intended to build new models for the PSA Screening ~ nSES associations. This is updated from my previous version to include standardized nSES variables for all ancestries
-
-```{r}
-keep_variables = c("data_df", "keep_variables", "ses_factors", "ances") 
-rm(list = ls()[!(ls() %in% keep_variables)])
-
-# Create some dataframes to save the prevalence per ancestry
-summ_df = tibble()
-
-# I also want to loop through this per ancestry
-for (j in ances){
-  
-  # Print ancestry to benchmark
-  print(j)
-  
-  # Let's pull out the ancestry specific data and set list for models for this ancestry
-  data_split = data_df %>% filter(Ances == j)
-  model_results = list()
-    
-  # Now create a loop that models the variables of interest and then saves them to a list of models
-  # Each loop will run a model for total, incidence, and prevalent cases
-  for (i in ses_factors){
-  
-    
-    # Create symbol for coding reason
-    i = sym(i)
-    
-    # Calculate the standardized data for the Deprivation index of interest
-      temp_df = data_split %>% drop_na(!!i) %>% 
-        mutate(Deprivation_z = scale(!!i)[,1],
-               PSA_Screening = as.factor(PSA_Screening)
-               )
-    
-    # Run models of interest
-      formula = paste0("PSA_Screening ~ Deprivation_z + age_assessment"
-                       ) %>% as.formula()
-      
-      model = logistic_reg() %>% fit(formula, data = temp_df)
-    
-      OR = tidy(model, exponentiate = T) %>% 
-        rename(OR = estimate) %>% 
-        mutate(low95 = exp(log(OR) - 1.96*std.error), 
-               up95 = exp(log(OR) + 1.96*std.error)) %>% 
-        select(-std.error, -statistic) 
-    
-      # Pull specific results before saving
-      model_results[[i]] <- OR[2,]
-      
-    
-    # Benchmark that this set of model is complete 
-    print(i)
-  }
-
-  
-  # Save the models
-  results_df = list_rbind(model_results, names_to = "ses") 
-  
-  # Remove the term variable (since it's redundant) and then add to summary data_frame
-  summ_df = results_df %>% 
-    select(-term) %>% 
-    mutate(ancestry = j) %>% 
-    rbind(summ_df, .) 
-
-}
-  
-
-# And now export these models.
-summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp4_models_2024.04.23.csv")
-
+  write_csv(., file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp4_corrPSA.Visits.nSES_2024.05.20.csv")
 
 ```
 
