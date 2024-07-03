@@ -36,6 +36,7 @@ library(patchwork)
 library(gridExtra)
 library(meta)
 library(openxlsx)
+library(Rmpfr)
 
 # Let's load custom functions
 `%notin%` = Negate(`%in%`)
@@ -45,10 +46,10 @@ library(openxlsx)
 
 # Load the necessary data
 
-This load and edits the necessary data file to do my analysis. This includes the cancer, PRS, and SES data for the 451 variant PRS and the 5 ancestries I have
+This load and edits the necessary data file to do my analysis. This includes the cancer, PRS, and SES data for the 269 variant PRS and the 5 ancestries I have
 
 ```{r}
-data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.05.16.csv")
+data_raw = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_PRS269_2024.05.16.csv")
 
 # I also want to make sure to have new cancer variables that I can plug into my models. 
 data_df = data_raw %>% 
@@ -104,6 +105,10 @@ ses_factors
 
 # Pull the European, African, South Asian, and Mixed ancestries that I plan to look at
 ances = data_df %>% pull(Ances) %>% unique() %>% .[-2]
+ances
+
+# I'm actually only going to use the eur and afr results
+ances = ances[1:2]
 ances
 
 ```
@@ -432,9 +437,14 @@ for (j in ances){
       
   # Run the model
   OR = tidy(model, exponentiate = T) %>% 
-  rename(OR = estimate) %>% 
-  mutate(low95 = exp(log(OR) - 1.96*std.error), 
-  up95 = exp(log(OR) + 1.96*std.error)) %>% 
+    rename(OR = estimate) %>% 
+    mutate(low95 = exp(log(OR) - 1.96*std.error), 
+           up95 = exp(log(OR) + 1.96*std.error),
+           p.value = (mpfr(statistic, precBits = 256) %>% 
+                        pnorm(., lower.tail = FALSE) %>% 
+                        as.numeric(2*.)
+                      )
+           ) %>% 
   select(-std.error, -statistic) 
   
   # Format the results by pulling relevant data and adding the reference
@@ -462,14 +472,12 @@ for (j in ances){
            case_control = decile_size$case_control) %>% 
     rbind(summ_df, .)
 
-
-  
 }
   
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure1_models_2024.06.21.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table2_models_2024.07.02.csv")
 
 ```
 
@@ -1304,7 +1312,7 @@ for (i in ses_factors){
   
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure4_models_2024.05.21.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Figure4_models_2024.07.02.csv")
 
 
 # I also want to try creating a table of these models so I'm going to do some extra formatting and then export that table
@@ -1332,7 +1340,7 @@ table4 = summ_df %>%
 
 # And now export this table
 table4 %>% 
-  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table4_models_2024.05.21.csv")
+  write_csv(file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Draft_Figures/Table3_models_2024.07.02.csv")
 
 ```
 
@@ -1418,18 +1426,18 @@ This next area for all the extra little figures that I want to generate that peo
 
 Instead of the decile plot, I want to run an analysis where I treat PRS score as continuous scores. I will need to make sure to standardize the PRS scores by ancestry prior to modeling
 
-I want to repeat this specific analysis for the PRS269 and PRScsx scores. To do that, I need to process them the same way as the other data before hand. Let me note those steps
+I want to repeat this specific analysis for the PRS451 and PRScsx scores. To do that, I need to process them the same way as the other data before hand. Let me note those steps
 
-### Process PRS269 and PRS-CSx data
+### Process PRS451 and PRS-CSx data
 
 ```{r}
 # Remove non-relevant variables
-keep_variables = c("data_df", "data_df_PRS269", "data_df_PRScsx", "keep_variables", "ses_factors", "ances",
+keep_variables = c("data_df", "data_df_PRS451", "data_df_PRScsx", "keep_variables", "ses_factors", "ances",
                    "table1") 
 rm(list = ls()[!(ls() %in% keep_variables)])
 
-# Processing PRS269 data
-data_df_PRS269 = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_PRS269_2024.05.16.csv") %>% 
+# Processing PRS451 data
+data_df_PRS451 = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_DataFiles/composite_data_2024.05.16.csv") %>% 
   #First, I want a variable that counts any prostate cancer as case and no cancer at all as the control. 
   # If no prostate cancer, but other cancer, then that is NA
   mutate(prostate_case = ifelse(prostate == 1, 1,
@@ -1516,7 +1524,7 @@ data_df_PRScsx = fread("/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Composite_
 
 ```{r}
 # Remove non-relevant variables
-keep_variables = c("data_df", "data_df_PRS269", "data_df_PRScsx", "keep_variables", "ses_factors", "ances",
+keep_variables = c("data_df", "data_df_PRS451", "data_df_PRScsx", "keep_variables", "ses_factors", "ances",
                    "table1") 
 rm(list = ls()[!(ls() %in% keep_variables)])
 
@@ -1530,8 +1538,8 @@ for (j in ances){
   print(j)
   
   # Let's pull out the ancestry specific data and set list for models for this ancestry
-  data_split_PRS451 = data_df %>% filter(Ances == j) %>% drop_na(PRS) 
-  data_split_PRS269 = data_df_PRS269 %>% filter(Ances == j) %>%  drop_na(PRS) 
+  data_split_PRS269 = data_df %>% filter(Ances == j) %>% drop_na(PRS) 
+  data_split_PRS451 = data_df_PRS451 %>% filter(Ances == j) %>%  drop_na(PRS)
   data_split_PRScsx = data_df_PRScsx %>% filter(Ances == j) %>% drop_na(PRS) 
   
   # Set the model
@@ -1550,14 +1558,22 @@ for (j in ances){
     rename(OR = estimate) %>% 
     mutate(PRS = "PRS_451") %>% 
     mutate(low95 = exp(log(OR) - 1.96*std.error), 
-           up95 = exp(log(OR) + 1.96*std.error)) %>% 
+           up95 = exp(log(OR) + 1.96*std.error),
+           p.value = (mpfr(statistic, precBits = 256) %>% 
+                        pnorm(., lower.tail = FALSE) %>% 
+                        as.numeric(2*.))
+           ) %>% 
     select(PRS, OR, p.value, low95, up95) %>% .[2,]
   
   OR_269 = tidy(model_269, exponentiate = T) %>% 
     rename(OR = estimate) %>% 
     mutate(PRS = "PRS_269") %>% 
     mutate(low95 = exp(log(OR) - 1.96*std.error), 
-           up95 = exp(log(OR) + 1.96*std.error)) %>% 
+           up95 = exp(log(OR) + 1.96*std.error),
+           p.value = (mpfr(statistic, precBits = 256) %>% 
+                        pnorm(., lower.tail = FALSE) %>% 
+                        as.numeric(2*.))
+           ) %>% 
     select(PRS, OR, p.value, low95, up95) %>% .[2,]
   
   OR_csx = tidy(model_csx, exponentiate = T) %>% 
@@ -1565,11 +1581,15 @@ for (j in ances){
     mutate(OR = 1/OR) %>% # I messed up the effect allele when calculating the score so I have the inverse effect
     mutate(PRS = "PRS_csx") %>% 
     mutate(low95 = exp(log(OR) - 1.96*std.error), 
-           up95 = exp(log(OR) + 1.96*std.error)) %>% 
+           up95 = exp(log(OR) + 1.96*std.error),
+           p.value = (mpfr(statistic, precBits = 256) %>% 
+                        pnorm(., lower.tail = FALSE) %>% 
+                        as.numeric(2*.))
+           ) %>% 
     select(PRS, OR, p.value, low95, up95) %>% .[2,]
   
   # Merge the separate model results
-  results_df = rbind(OR_451, OR_269, OR_csx)
+  results_df = rbind(OR_269, OR_451, OR_csx)
   
   # Then add to summary data_frame
   summ_df = results_df %>% 
@@ -1580,7 +1600,7 @@ for (j in ances){
 # And now export these models.
 summ_df %>%
   select(ancestry, !ancestry) %>% 
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp1_models_2024.06.25.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp1_models_2024.07.02.csv")
 
 ```
 
@@ -1661,7 +1681,6 @@ summ_df %>% filter(PRS == "PRS_csx") %>%
 ```
 
 
-
 ## Supp 2 - Simple interaction
 
 In order to take advantage of non-European data, I will run simple nSES*PRS logistic regression models to see the non-sig interactions across ancestries
@@ -1706,7 +1725,11 @@ for (j in ances){
       OR = tidy(model, exponentiate = T) %>% 
         rename(OR = estimate) %>% 
         mutate(low95 = exp(log(OR) - 1.96*std.error), 
-               up95 = exp(log(OR) + 1.96*std.error)) %>% 
+               up95 = exp(log(OR) + 1.96*std.error),
+               p.value = (mpfr(statistic, precBits = 256) %>% 
+                        pnorm(., lower.tail = FALSE) %>% 
+                        as.numeric(2*.))
+               ) %>% 
         select(-std.error, -statistic) 
     
       # Pull specific results before saving
@@ -1716,7 +1739,6 @@ for (j in ances){
     # Benchmark that this set of model is complete 
     print(i)
   }
-
   
   # Save the models
   results_df = list_rbind(model_results, names_to = "ses") 
@@ -1731,7 +1753,7 @@ for (j in ances){
 
 # And now export these models.
 summ_df %>%
-  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp2_models_2024.05.21.csv")
+  write_csv( file = "/labs/jswitte/Projects/jjudd5/SES.PRS_Project/Supp_Figures/Supp2_models_2024.07.02.csv")
 ```
 
 
