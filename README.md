@@ -5,7 +5,7 @@ Welcome to the Judd et al. 2024 repository, which houses data processing and ana
 "Investigating the Role of Neighborhood Socioeconomic Status and Germline Genetics on Prostate Cancer Risk"
 
 Paper Reference  
-Authors: [Jon Judd et al.]  
+Authors: Jonathan Judd, Jeffrey P. Spence, Jonathan K. Pritchard, Linda Kachuri, John S. Witte  
 Preprint: MedRxiv - Investigating the Role of Neighborhood Socioeconomic Status and Germline Genetics on Prostate Cancer Risk  
 DOI: https://doi.org/10.1101/2024.07.31.24311312
 
