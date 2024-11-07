@@ -8,6 +8,7 @@ Paper Reference
 Authors: [Jon Judd et al.]
 Preprint: MedRxiv - Investigating the Role of Neighborhood Socioeconomic Status and Germline Genetics on Prostate Cancer Risk
 This repository is designed to accompany the analysis and findings presented in the above preprint.
+DOI: https://doi.org/10.1101/2024.07.31.24311312
 
 ---
 
